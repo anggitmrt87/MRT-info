@@ -60,12 +60,13 @@ $(LOADER_NAME): mrt_loader.c
 
 # ============================================================
 # Security checker: hash dari mrt_loader dihitung otomatis
+# Build dynamic (tanpa -static) agar dapat link ke liblog
 # ============================================================
 $(SECURITY_NAME): mrt_security.c sha256.c $(LOADER_NAME)
 	@echo "Computing SHA256 hash of $(LOADER_NAME)..."
 	HASH=$$(sha256sum $(LOADER_NAME) | cut -d' ' -f1); \
 	echo "Hash: $$HASH"; \
-	$(CC) $(C_FLAGS) -static -DEXPECTED_HASH=\"$$HASH\" mrt_security.c sha256.c -o $@ $(LDFLAGS)
+	$(CC) $(C_FLAGS) -DEXPECTED_HASH=\"$$HASH\" mrt_security.c sha256.c -o $@ $(LDFLAGS)
 
 # ------------------------------
 # Pembersihan
