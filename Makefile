@@ -1,6 +1,6 @@
 # =============================================================================
 # Makefile untuk MRT Reborn
-# Mendukung multiple arsitektur Android (arm64-v8a, armeabi-v7a, x86_64, x86)
+# Mendukung multiple arsitektur Android (arm64-v8a, armeabi-v7a)
 # =============================================================================
 
 # ------------------------------
@@ -11,24 +11,26 @@ API_LEVEL   ?= 21
 TARGET_ARCH ?= arm64-v8a
 
 # ------------------------------
+# Nama target
+# ------------------------------
+LIB_NAME     = libmrtreborn.so
+LOADER_NAME  = mrt_loader
+
+# ------------------------------
 # Deteksi toolchain berdasarkan TARGET_ARCH
 # ------------------------------
 ifeq ($(TARGET_ARCH), arm64-v8a)
     TRIPLE        = aarch64-linux-android
     CLANG_PREFIX  = aarch64-linux-android$(API_LEVEL)
     LIB_ARCH      = arm64-v8a
+    # Path tempat library akan diletakkan di perangkat (hardcode di loader)
+    LIB_INSTALL_PATH = /system/lib64/$(LIB_NAME)
 else ifeq ($(TARGET_ARCH), armeabi-v7a)
     TRIPLE        = armv7a-linux-androideabi
     CLANG_PREFIX  = armv7a-linux-androideabi$(API_LEVEL)
     LIB_ARCH      = armeabi-v7a
-else ifeq ($(TARGET_ARCH), x86_64)
-    TRIPLE        = x86_64-linux-android
-    CLANG_PREFIX  = x86_64-linux-android$(API_LEVEL)
-    LIB_ARCH      = x86_64
-else ifeq ($(TARGET_ARCH), x86)
-    TRIPLE        = i686-linux-android
-    CLANG_PREFIX  = i686-linux-android$(API_LEVEL)
-    LIB_ARCH      = x86
+    # Path tempat library akan diletakkan di perangkat (hardcode di loader)
+    LIB_INSTALL_PATH = /system/lib/$(LIB_NAME)
 else
     $(error Unsupported TARGET_ARCH: $(TARGET_ARCH))
 endif
@@ -50,15 +52,6 @@ C_FLAGS      = $(COMMON_FLAGS) -std=c11
 # Linker flags: gunakan libc++_static untuk menghindari dependensi runtime
 LDFLAGS      = -L$(TOOLCHAIN_DIR)/sysroot/usr/lib/$(TRIPLE)/$(API_LEVEL) \
                -lstdc++ -ldl -llog
-
-# ------------------------------
-# Nama target
-# ------------------------------
-LIB_NAME     = libmrtreborn.so
-LOADER_NAME  = mrt_loader
-
-# Path tempat library akan diletakkan di perangkat (hardcode di loader)
-LIB_INSTALL_PATH = /system/$(TARGET_ARCH)/$(LIB_NAME)
 
 # ------------------------------
 # Aturan build
