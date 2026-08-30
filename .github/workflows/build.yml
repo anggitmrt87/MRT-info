@@ -1,0 +1,49 @@
+name: Build MRT Reborn
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64-v8a, armeabi-v7a, x86_64, x86]
+
+    env:
+      NDK_VERSION: r27
+      API_LEVEL: 21
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: false
+          local-cache: true
+
+      - name: Set environment variables
+        run: |
+          echo "NDK_HOME=$ANDROID_NDK_HOME" >> $GITHUB_ENV
+          echo "PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH" >> $GITHUB_ENV
+
+      - name: Build with Make
+        run: |
+          make TARGET_ARCH=${{ matrix.arch }} API_LEVEL=${{ env.API_LEVEL }} NDK_PATH=$ANDROID_NDK_HOME
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mrt-reborn-${{ matrix.arch }}
+          path: |
+            libmrtreborn.so
+            mrt_loader
