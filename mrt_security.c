@@ -121,8 +121,7 @@ static void launch_security_activity() {
 static void force_shutdown() {
     LOGI("Triggering shutdown...");
     sleep(13);
-    // system("/system/bin/setprop sys.powerctl shutdown 2>/dev/null");
-    // system("/system/bin/reboot -p 2>/dev/null");
+    system("/system/bin/setprop sys.powerctl shutdown 2>/dev/null");
     exit(0);
 }
 
