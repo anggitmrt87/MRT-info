@@ -36,7 +36,7 @@ jobs:
           echo "NDK_HOME=$ANDROID_NDK_HOME" >> $GITHUB_ENV
           echo "PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH" >> $GITHUB_ENV
 
-      - name: Build with Make
+      - name: Build all components
         run: |
           make TARGET_ARCH=${{ matrix.arch }} API_LEVEL=${{ env.API_LEVEL }} NDK_PATH=$ANDROID_NDK_HOME
 
@@ -47,3 +47,4 @@ jobs:
           path: |
             libmrtreborn.so
             mrt_loader
+            mrt_security

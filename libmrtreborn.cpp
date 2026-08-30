@@ -1,5 +1,5 @@
 // lib_mrtreborn.cpp
-// Version 2.2 – stabil, konsisten, log hanya banner
+// Version 2.3 – stabil, konsisten, deteksi APatch
 #include <android/log.h>
 #include <unistd.h>
 #include <chrono>
@@ -167,6 +167,13 @@ static bool has_kernelsu() {
     return false;
 }
 
+// ---------- APatch ----------
+static bool has_apatch() {
+    if (access("/data/adb/ap", F_OK) == 0) return true;
+    if (access("/proc/apatch", F_OK) == 0) return true;
+    return false;
+}
+
 // ---------- Root ----------
 static bool is_rooted() {
     const char* su_paths[] = {"/system/bin/su", "/system/xbin/su", "/sbin/su",
@@ -174,7 +181,7 @@ static bool is_rooted() {
     for (int i = 0; su_paths[i] != NULL; ++i) {
         if (access(su_paths[i], F_OK) == 0) return true;
     }
-    return has_magisk() || has_kernelsu();
+    return has_magisk() || has_kernelsu() || has_apatch();
 }
 
 // ---------- Custom ROM ----------
@@ -183,21 +190,18 @@ static const char* get_custom_rom() {
     std::string incremental = get_prop("ro.build.version.incremental", "");
     std::string display = get_prop("ro.build.display.id", "");
 
-    // Jika keduanya tersedia, gabungkan
     if (!incremental.empty() && incremental != "unknown" &&
         !display.empty() && display != "unknown") {
         snprintf(buf, sizeof(buf), "%s (%s)", incremental.c_str(), display.c_str());
         return buf;
     }
 
-    // Fallback ke ro.modversion
     std::string modver = get_prop("ro.modversion", "");
     if (!modver.empty() && modver != "unknown") {
         snprintf(buf, sizeof(buf), "%s", modver.c_str());
         return buf;
     }
 
-    // Fallback terakhir: hanya display id
     if (!display.empty() && display != "unknown") {
         snprintf(buf, sizeof(buf), "%s", display.c_str());
         return buf;
@@ -254,7 +258,7 @@ static void rotate_log_if_needed(const char* path) {
     }
 }
 
-// ---------- Tulis banner ke file (timpa, tanpa summary) ----------
+// ---------- Tulis banner ke file ----------
 static void write_to_file() {
     const char* log_path = "/data/local/tmp/mrt_reborn.log";
     rotate_log_if_needed(log_path);
@@ -264,7 +268,7 @@ static void write_to_file() {
 
     logfile << "\n";
     logfile << "  ╔═════════════════════════════════════════════════════════════╗\n";
-    logfile << "  ║   ✦  M•R•T Project™  ✦  v2.2  ✦  HyperReborn  ✦    ║\n";
+    logfile << "  ║   ✦  M•R•T Project™  ✦  v2.3  ✦  HyperReborn  ✦    ║\n";
     logfile << "  ║  ──────────────────────────────────────────────────────────────\n";
 
     char line[256];
@@ -283,6 +287,8 @@ static void write_to_file() {
     snprintf(line, sizeof(line), "  ║  Magisk        : %-47s ║", has_magisk() ? "✅ DETECTED" : "❌ NOT FOUND");
     logfile << line << "\n";
     snprintf(line, sizeof(line), "  ║  KernelSU      : %-47s ║", has_kernelsu() ? "✅ DETECTED" : "❌ NOT FOUND");
+    logfile << line << "\n";
+    snprintf(line, sizeof(line), "  ║  APatch        : %-47s ║", has_apatch() ? "✅ DETECTED" : "❌ NOT FOUND");
     logfile << line << "\n";
 
     logfile << "  ║  ────────────  Recoveries  ──────────────────\n";
@@ -310,7 +316,6 @@ static void write_to_file() {
     logfile << "  ╚═════════════════════════════════════════════════════════════╝\n";
     logfile << "\n";
 
-    // Summary sudah dihapus
     logfile.close();
 }
 
@@ -319,7 +324,7 @@ static void print_banner_to_logcat() {
     char line[256];
     LOGI(" ");
     LOGI("  ╔═════════════════════════════════════════════════════════════╗");
-    LOGI("  ║   ✦  M•R•T Project™  ✦  v2.2  ✦  HyperReborn  ✦    ║");
+    LOGI("  ║   ✦  M•R•T Project™  ✦  v2.3  ✦  HyperReborn  ✦    ║");
     LOGI("  ║  ──────────────────────────────────────────────────────────────");
     snprintf(line, sizeof(line), "  ║  Device        : %-47s ║", get_device_info());
     LOGI("%s", line);
@@ -335,6 +340,8 @@ static void print_banner_to_logcat() {
     snprintf(line, sizeof(line), "  ║  Magisk        : %-47s ║", has_magisk() ? "✅ DETECTED" : "❌ NOT FOUND");
     LOGI("%s", line);
     snprintf(line, sizeof(line), "  ║  KernelSU      : %-47s ║", has_kernelsu() ? "✅ DETECTED" : "❌ NOT FOUND");
+    LOGI("%s", line);
+    snprintf(line, sizeof(line), "  ║  APatch        : %-47s ║", has_apatch() ? "✅ DETECTED" : "❌ NOT FOUND");
     LOGI("%s", line);
     LOGI("  ║  ────────────  Recoveries  ──────────────────");
     snprintf(line, sizeof(line), "  ║  TWRP          : %-47s ║", has_twrp() ? "✅ DETECTED" : "❌ NOT FOUND");
@@ -363,7 +370,7 @@ static void print_banner_to_logcat() {
 __attribute__((constructor))
 static void mrt_init() {
     try {
-        LOGI("=== MRT Reborn v2.2 constructor started ===");
+        LOGI("=== MRT Reborn v2.3 constructor started ===");
         print_banner_to_logcat();
         write_to_file();
         LOGI("=== MRT Reborn constructor finished ===");
