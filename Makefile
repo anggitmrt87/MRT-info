@@ -58,7 +58,7 @@ LIB_NAME     = libmrtreborn.so
 LOADER_NAME  = mrt_loader
 
 # Path tempat library akan diletakkan di perangkat (hardcode di loader)
-LIB_INSTALL_PATH = /system/lib64/$(LIB_NAME)
+LIB_INSTALL_PATH = /system/$(TARGET_ARCH)/$(LIB_NAME)
 
 # ------------------------------
 # Aturan build
