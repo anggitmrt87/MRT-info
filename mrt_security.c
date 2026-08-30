@@ -207,7 +207,14 @@ int main(int argc, char** argv) {
     }
 
     int integrity_passed = 0;
-    char* actual_file = resolved_path ? resolved_path : strdup(CONFIG_FILE);
+    // Perbaikan: actual_file mengambil alih resolved_path, tidak ada double free
+    char* actual_file = NULL;
+    if (resolved_path) {
+        actual_file = resolved_path;   // ambil alih pointer
+    } else {
+        actual_file = strdup(CONFIG_FILE);
+    }
+
     if (access(actual_file, F_OK) == 0) {
         char* hash = sha256_file(actual_file);
         if (hash) {
@@ -228,8 +235,11 @@ int main(int argc, char** argv) {
     } else {
         LOGE("✗ Config file MISSING.");
     }
-    free(resolved_path);
-    free(actual_file);
+
+    // Hanya free actual_file (resolved_path sudah sama, tidak perlu free lagi)
+    if (actual_file) {
+        free(actual_file);
+    }
 
     if (!integrity_passed) {
         failure_count++;
