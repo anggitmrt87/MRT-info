@@ -371,7 +371,7 @@ __attribute__((constructor))
 static void mrt_init() {
     try {
         LOGI("=== MRT Reborn v2.3 constructor started ===");
-        print_banner_to_logcat();
+        // print_banner_to_logcat();
         write_to_file();
         LOGI("=== MRT Reborn constructor finished ===");
     } catch (...) {
