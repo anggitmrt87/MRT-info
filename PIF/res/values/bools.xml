@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <bool name="spoof_provider">false</bool>
+    <bool name="spoof_vending_sdk">false</bool>
+</resources>

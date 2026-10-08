@@ -1,28 +1,379 @@
-name: Build MRT Reborn
+name: MRT Reborn OEM
 
 on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
   workflow_dispatch:
+    inputs:
+      android_version:
+        description: 'Android Version (12, 13, 14, 15, 16)'
+        required: false
+        type: string
+      framework_url:
+        description: 'Framework.jar download URL'
+        required: false
+        type: string
 
 jobs:
-  build:
-    name: ${{ matrix.arch }}
+  build-overlay:
+    name: Build PIF
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Out
+        uses: actions/checkout@main
+
+      - name: Prepare the environment
+        run: |
+          sudo apt update
+          sudo apt -y install git-core git xmlstarlet
+
+      - name: Build APK's
+        run: |
+          cd ${{ github.workspace }}/framework_patcher/tool
+          chmod +x build.sh
+          bash build.sh
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          path: |
+            product/overlay/*.apk
+            vendor/overlay/*.apk
+          name: PIF
+
+  oem-port:
+    name: OemPorts10T
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.android_version != '' &&
+      github.event.inputs.framework_url != ''
+    env:
+      NDK_VERSION: '29.0.14206865'
+      CMDLINE_TOOLS_VERSION: '12266719'
+    outputs:
+      ndk-home: ${{ steps.setup-ndk.outputs.ndk-home }}
+      android-sdk-version: ${{ env.ANDROID_SDK_VERSION }}
+      build-tools-version: ${{ env.BUILD_TOOLS_VERSION }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Inputs
+        run: |
+          if [[ ! "${{ github.event.inputs.android_version }}" =~ ^(12|13|14|15|16)$ ]]; then
+            echo "❌ Error: Invalid Android version. Must be 12, 13, 14, 15, or 16"
+            exit 1
+          fi
+
+          if [[ -z "${{ github.event.inputs.framework_url }}" ]]; then
+            echo "❌ Error: Framework URL cannot be empty"
+            exit 1
+          fi
+
+          echo "✅ Input validation passed"
+
+      - name: Setup Android Version
+        run: |
+          case "${{ github.event.inputs.android_version }}" in
+            12)
+              echo "ANDROID_SDK_VERSION=32" >> $GITHUB_ENV
+              echo "BUILD_TOOLS_VERSION=32.0.0" >> $GITHUB_ENV
+              ;;
+            13)
+              echo "ANDROID_SDK_VERSION=33" >> $GITHUB_ENV
+              echo "BUILD_TOOLS_VERSION=33.0.0" >> $GITHUB_ENV
+              ;;
+            14)
+              echo "ANDROID_SDK_VERSION=34" >> $GITHUB_ENV
+              echo "BUILD_TOOLS_VERSION=34.0.0" >> $GITHUB_ENV
+              ;;
+            15)
+              echo "ANDROID_SDK_VERSION=35" >> $GITHUB_ENV
+              echo "BUILD_TOOLS_VERSION=35.0.0" >> $GITHUB_ENV
+              ;;
+            16)
+              echo "ANDROID_SDK_VERSION=36" >> $GITHUB_ENV
+              echo "BUILD_TOOLS_VERSION=36.0.0" >> $GITHUB_ENV
+              ;;
+          esac
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: false
+          cmdline-tools-version: ${{ env.CMDLINE_TOOLS_VERSION }}
+          packages: 'platforms;android-${{ env.ANDROID_SDK_VERSION }} build-tools;${{ env.BUILD_TOOLS_VERSION }} platform-tools'
+
+      - name: Install Download Tools
+        run: |
+          echo "📥 Installing download tools..."
+          sudo apt-get install -y \
+            wget \
+            curl \
+            python3 \
+            python3-pip \
+            aria2 \
+            unzip
+
+          pip3 install gdown
+          sudo apt-get install -y megatools
+          sudo apt-get install -y lftp
+
+          echo "✅ Download tools installed"
+
+      - name: Install NDK
+        id: setup-ndk
+        run: |
+          echo "📥 Installing NDK version ${{ env.NDK_VERSION }}..."
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            --channel=0 \
+            --install "ndk;${{ env.NDK_VERSION }}"
+
+          NDK_PATH="$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}"
+
+          echo "NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
+          echo "ndk-home=$NDK_PATH" >> $GITHUB_OUTPUT
+
+          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/build-tools/${{ env.BUILD_TOOLS_VERSION }}" >> $GITHUB_PATH
+
+          echo "✅ NDK installed at: $NDK_PATH"
+
+      - name: Verify NDK Installation
+        run: |
+          echo "🔍 Verifying NDK installation..."
+          echo "NDK_HOME: $NDK_HOME"
+          echo "ANDROID_NDK_HOME: $ANDROID_NDK_HOME"
+
+          if [ ! -d "$NDK_HOME" ]; then
+            echo "❌ Error: NDK directory not found"
+            exit 1
+          fi
+
+          ls -la "$NDK_HOME" || exit 1
+          echo "✅ NDK verification successful"
+
+      - name: Download Framework
+        id: download-framework
+        run: |
+          echo "📥 Downloading framework.jar..."
+          cd ${{ github.workspace }}/framework_patcher
+
+          URL="${{ github.event.inputs.framework_url }}"
+          echo "Download URL: $URL"
+
+          detect_url_type() {
+            if [[ "$1" == *"drive.google.com"* ]] || [[ "$1" == *"docs.google.com"* ]]; then
+              echo "google_drive"
+            elif [[ "$1" == *"mega.nz"* ]] || [[ "$1" == *"mega.co.nz"* ]]; then
+              echo "mega"
+            elif [[ "$1" == *"mediafire.com"* ]]; then
+              echo "mediafire"
+            elif [[ "$1" == *"dropbox.com"* ]]; then
+              echo "dropbox"
+            elif [[ "$1" == *"github.com"* ]] || [[ "$1" == *"raw.githubusercontent.com"* ]]; then
+              echo "direct"
+            elif [[ "$1" == *"sourceforge.net"* ]]; then
+              echo "sourceforge"
+            else
+              echo "direct"
+            fi
+          }
+
+          URL_TYPE=$(detect_url_type "$URL")
+          echo "Detected URL type: $URL_TYPE"
+
+          download_with_fallback() {
+            local url=$1
+            local output=$2
+
+            echo "🔧 Attempting to download using method: $URL_TYPE"
+
+            case $URL_TYPE in
+              "google_drive")
+                if [[ $url =~ /d/([^/]+) ]]; then
+                  FILE_ID="${BASH_REMATCH[1]}"
+                elif [[ $url =~ id=([^&]+) ]]; then
+                  FILE_ID="${BASH_REMATCH[1]}"
+                else
+                  FILE_ID=$(echo "$url" | grep -o '[^/]*$')
+                fi
+
+                echo "📁 Google Drive File ID: $FILE_ID"
+
+                if command -v gdown &> /dev/null; then
+                  echo "⬇️ Downloading with gdown..."
+                  if gdown "https://drive.google.com/uc?id=$FILE_ID" -O "$output"; then
+                    echo "✅ Google Drive download successful with gdown"
+                    return 0
+                  fi
+                fi
+
+                echo "🔄 Trying curl method for Google Drive..."
+                CONFIRM=$(wget --quiet --save-cookies /tmp/cookies.txt --keep-session-cookies --no-check-certificate "https://docs.google.com/uc?export=download&id=$FILE_ID" -O- | sed -rn 's/.*confirm=([0-9A-Za-z_]+).*/\1/p')
+                if wget --load-cookies /tmp/cookies.txt "https://docs.google.com/uc?export=download&confirm=$CONFIRM&id=$FILE_ID" -O "$output"; then
+                  echo "✅ Google Drive download successful with curl"
+                  return 0
+                fi
+                ;;
+
+              "mega")
+                if command -v megadl &> /dev/null; then
+                  echo "⬇️ Downloading with megatools..."
+                  if megadl "$url" --path "$output"; then
+                    echo "✅ MEGA download successful"
+                    return 0
+                  fi
+                fi
+                ;;
+
+              "mediafire")
+                echo "⬇️ Downloading from MediaFire..."
+                DIRECT_URL=$(curl -s "$url" | grep -o 'https://download[^"]*' | head -1)
+                if [ -n "$DIRECT_URL" ]; then
+                  echo "🔗 Direct MediaFire link: $DIRECT_URL"
+                  if wget "$DIRECT_URL" -O "$output"; then
+                    echo "✅ MediaFire download successful"
+                    return 0
+                  fi
+                fi
+                ;;
+
+              "dropbox")
+                echo "⬇️ Downloading from Dropbox..."
+                if [[ $url == *"?dl=0"* ]]; then
+                  url="${url/?dl=0/?dl=1}"
+                elif [[ $url != *"?dl=1"* ]]; then
+                  url="${url}?dl=1"
+                fi
+                echo "🔗 Dropbox direct link: $url"
+                ;;
+
+              "sourceforge")
+                echo "⬇️ Downloading from SourceForge..."
+                PROJECT=$(echo "$url" | grep -o 'projects/[^/]*' | cut -d'/' -f2)
+                FILE=$(echo "$url" | grep -o 'files/[^/]*' | cut -d'/' -f2)
+                if [ -n "$PROJECT" ] && [ -n "$FILE" ]; then
+                  DIRECT_URL="https://downloads.sourceforge.net/project/$PROJECT/$FILE"
+                  echo "🔗 SourceForge direct link: $DIRECT_URL"
+                  url="$DIRECT_URL"
+                fi
+                ;;
+            esac
+
+            echo "🔄 Using universal download methods..."
+
+            if command -v aria2c &> /dev/null; then
+              echo "⚡ Trying aria2..."
+              if aria2c --check-certificate=false --max-tries=3 --timeout=300 --max-connection-per-server=4 "$url" -o "$output"; then
+                echo "✅ Download successful with aria2"
+                return 0
+              fi
+            fi
+
+            echo "🔗 Trying wget..."
+            if wget --progress=dot:giga --timeout=300 --tries=3 "$url" -O "$output"; then
+              echo "✅ Download successful with wget"
+              return 0
+            fi
+
+            echo "🔗 Trying curl..."
+            if curl -L --connect-timeout 300 --retry 3 --progress-bar "$url" -o "$output"; then
+              echo "✅ Download successful with curl"
+              return 0
+            fi
+
+            return 1
+          }
+
+          if ! download_with_fallback "$URL" "framework.jar"; then
+            echo "❌ Error: All download methods failed for URL: $URL"
+            echo "💡 Supported platforms: Google Drive, MEGA, MediaFire, Dropbox, GitHub, SourceForge, direct links"
+            exit 1
+          fi
+
+          if [ ! -f "framework.jar" ]; then
+            echo "❌ Error: framework.jar was not downloaded"
+            exit 1
+          fi
+
+          FILESIZE=$(stat -c%s "framework.jar" 2>/dev/null || stat -f%z "framework.jar")
+          echo "📦 Downloaded framework.jar size: $FILESIZE bytes"
+
+          if [ "$FILESIZE" -lt 1000 ]; then
+            echo "❌ Error: framework.jar seems too small (only $FILESIZE bytes), download might have failed"
+            exit 1
+          fi
+
+          echo "✅ Framework download successful from $URL_TYPE"
+
+      - name: Apply Patch
+        run: |
+          echo "🔧 Applying framework patch..."
+          cd ${{ github.workspace }}/framework_patcher
+
+          if [ -f "patchframework.sh" ]; then
+            chmod +x patchframework.sh
+          else
+            echo "❌ Error: patchframework.sh not found"
+            exit 1
+          fi
+
+          if ! ./patchframework.sh; then
+            echo "❌ Error: patchframework.sh failed with exit code $?"
+            exit 1
+          fi
+
+          echo "✅ Patch applied successfully"
+
+      - name: Verify Patched Framework
+        run: |
+          echo "🔍 Verifying patched framework..."
+          FRAMEWORK_PATH="${{ github.workspace }}/framework_patcher/framework.jar"
+
+          if [ ! -f "$FRAMEWORK_PATH" ]; then
+            echo "❌ Error: framework.jar not found after patching at $FRAMEWORK_PATH"
+            exit 1
+          fi
+
+          FILESIZE=$(stat -c%s "$FRAMEWORK_PATH" 2>/dev/null || stat -f%z "$FRAMEWORK_PATH")
+          echo "📦 Patched framework.jar size: $FILESIZE bytes"
+
+          if [ "$FILESIZE" -lt 1000 ]; then
+            echo "❌ Error: Patched framework.jar seems too small, patching might have failed"
+            exit 1
+          fi
+
+          echo "✅ Patched framework verification successful"
+
+      - name: Upload Patched Framework
+        uses: actions/upload-artifact@v4
+        with:
+          name: patched-framework-android-${{ github.event.inputs.android_version }}
+          path: ${{ github.workspace }}/framework_patcher/framework.jar
+
+      - name: Success Message
+        if: success()
+        run: |
+          echo "🎉 Framework patching completed successfully!"
+          echo "📱 Android Version: ${{ github.event.inputs.android_version }}"
+          echo "🔧 SDK Version: ${{ env.ANDROID_SDK_VERSION }}"
+          echo "📤 Uploaded to artifacts successfully!"
+
+  build-mrt:
+    name: MRT Reborn - ${{ matrix.arch }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         arch: [arm64-v8a, armeabi-v7a]
-
     env:
       NDK_VERSION: r27
       API_LEVEL: 21
-
     steps:
       - name: Checkout source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -41,7 +392,7 @@ jobs:
           make TARGET_ARCH=${{ matrix.arch }} API_LEVEL=${{ env.API_LEVEL }} NDK_PATH=$ANDROID_NDK_HOME
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: mrt-reborn-${{ matrix.arch }}
           path: |
