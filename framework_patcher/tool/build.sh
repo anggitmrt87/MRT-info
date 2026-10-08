@@ -17,7 +17,7 @@ if [ "$#" -eq 1 ]; then
     fi
 else
     cd "$script_dir"
-    makes="$(find "$PWD/.." -name Android.mk)"
+    makes="$(find "$PWD/../.." -name Android.mk)"
 fi
 
 if ! command -v aapt > /dev/null;then
