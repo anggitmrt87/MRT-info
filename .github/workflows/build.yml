@@ -3,6 +3,11 @@ name: MRT Reborn OEM
 on:
   workflow_dispatch:
     inputs:
+      build_pif_only:
+        description: 'Build PIF only (skip pif-updater, framework patch, MRT)'
+        required: false
+        type: boolean
+        default: false
       android_version:
         description: 'Android Version (12, 13, 14, 15, 16)'
         required: false
@@ -37,6 +42,18 @@ jobs:
             wget curl aria2 unzip megatools
           pip3 install --upgrade pip
           pip3 install gdown
+
+      - name: Mask sensitive URLs
+        env:
+          KEYBOX_URL: ${{ github.event.inputs.keybox_url }}
+          FRAMEWORK_URL: ${{ github.event.inputs.framework_url }}
+        run: |
+          if [ -n "$KEYBOX_URL" ]; then
+            echo "::add-mask::$KEYBOX_URL"
+          fi
+          if [ -n "$FRAMEWORK_URL" ]; then
+            echo "::add-mask::$FRAMEWORK_URL"
+          fi
 
       - name: Generate arrays.xml & info.txt
         env:
@@ -160,12 +177,15 @@ jobs:
   # ============================================================
   # JOB 2: Build pif-updater (Rust binary Android)
   #         -> berjalan setelah build-overlay
+  #         -> di-skip jika build_pif_only = true
   # ============================================================
   build-pif-updater:
     name: pif-updater - ${{ matrix.arch_name }}
     runs-on: ubuntu-latest
     needs: [build-overlay]
-    if: ${{ !cancelled() }}
+    if: >-
+      ${{ !cancelled() &&
+          github.event.inputs.build_pif_only != 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -248,6 +268,7 @@ jobs:
   # JOB 3: Patch framework.jar
   #         -> berjalan setelah pif-updater
   #         -> hanya jika input android_version & framework_url diisi
+  #         -> di-skip jika build_pif_only = true
   # ============================================================
   oem-port:
     name: OemPorts10T
@@ -255,6 +276,7 @@ jobs:
     needs: [build-pif-updater]
     if: >-
       ${{ !cancelled() &&
+          github.event.inputs.build_pif_only != 'true' &&
           github.event_name == 'workflow_dispatch' &&
           github.event.inputs.android_version != '' &&
           github.event.inputs.framework_url != '' }}
@@ -368,12 +390,21 @@ jobs:
 
       - name: Download Framework
         id: download-framework
+        env:
+          FRAMEWORK_URL_INPUT: ${{ github.event.inputs.framework_url }}
         run: |
+          set -euo pipefail
+
           echo "📥 Downloading framework.jar..."
+
+          # Mask base URL immediately
+          if [ -n "$FRAMEWORK_URL_INPUT" ]; then
+            echo "::add-mask::$FRAMEWORK_URL_INPUT"
+          fi
+
           cd ${{ github.workspace }}/framework_patcher
 
-          URL="${{ github.event.inputs.framework_url }}"
-          echo "Download URL: $URL"
+          URL="$FRAMEWORK_URL_INPUT"
 
           detect_url_type() {
             if [[ "$1" == *"drive.google.com"* ]] || [[ "$1" == *"docs.google.com"* ]]; then
@@ -395,12 +426,13 @@ jobs:
 
           URL_TYPE=$(detect_url_type "$URL")
           echo "Detected URL type: $URL_TYPE"
+          echo "🔒 URL is masked in logs"
 
           download_with_fallback() {
             local url=$1
             local output=$2
 
-            echo "🔧 Attempting to download using method: $URL_TYPE"
+            echo "🔧 Attempting to download (method: $URL_TYPE)"
 
             case $URL_TYPE in
               "google_drive")
@@ -412,7 +444,10 @@ jobs:
                   FILE_ID=$(echo "$url" | grep -o '[^/]*$')
                 fi
 
-                echo "📁 Google Drive File ID: $FILE_ID"
+                if [ -n "$FILE_ID" ]; then
+                  echo "::add-mask::$FILE_ID"
+                fi
+                echo "📁 Google Drive file detected"
 
                 if command -v gdown &> /dev/null; then
                   echo "⬇️ Downloading with gdown..."
@@ -424,6 +459,9 @@ jobs:
 
                 echo "🔄 Trying curl method for Google Drive..."
                 CONFIRM=$(wget --quiet --save-cookies /tmp/cookies.txt --keep-session-cookies --no-check-certificate "https://docs.google.com/uc?export=download&id=$FILE_ID" -O- | sed -rn 's/.*confirm=([0-9A-Za-z_]+).*/\1/p')
+                if [ -n "$CONFIRM" ]; then
+                  echo "::add-mask::$CONFIRM"
+                fi
                 if wget --load-cookies /tmp/cookies.txt "https://docs.google.com/uc?export=download&confirm=$CONFIRM&id=$FILE_ID" -O "$output"; then
                   echo "✅ Google Drive download successful with curl"
                   return 0
@@ -442,13 +480,11 @@ jobs:
 
               "mediafire")
                 echo "⬇️ Downloading from MediaFire..."
-                DIRECT_URL=$(curl -s "$url" | grep -o 'https://download[^"]*' | head -1)
+                DIRECT_URL=$(curl -s "$url" | grep -o 'https://download[^"]*' | head -1 || true)
                 if [ -n "$DIRECT_URL" ]; then
-                  echo "🔗 Direct MediaFire link: $DIRECT_URL"
-                  if wget "$DIRECT_URL" -O "$output"; then
-                    echo "✅ MediaFire download successful"
-                    return 0
-                  fi
+                  echo "::add-mask::$DIRECT_URL"
+                  url="$DIRECT_URL"
+                  echo "🔗 Direct MediaFire link resolved (masked)"
                 fi
                 ;;
 
@@ -459,17 +495,19 @@ jobs:
                 elif [[ $url != *"?dl=1"* ]]; then
                   url="${url}?dl=1"
                 fi
-                echo "🔗 Dropbox direct link: $url"
+                echo "::add-mask::$url"
+                echo "🔗 Dropbox direct link resolved (masked)"
                 ;;
 
               "sourceforge")
                 echo "⬇️ Downloading from SourceForge..."
-                PROJECT=$(echo "$url" | grep -o 'projects/[^/]*' | cut -d'/' -f2)
-                FILE=$(echo "$url" | grep -o 'files/[^/]*' | cut -d'/' -f2)
+                PROJECT=$(echo "$url" | grep -o 'projects/[^/]*' | cut -d'/' -f2 || true)
+                FILE=$(echo "$url" | grep -o 'files/[^/]*' | cut -d'/' -f2 || true)
                 if [ -n "$PROJECT" ] && [ -n "$FILE" ]; then
                   DIRECT_URL="https://downloads.sourceforge.net/project/$PROJECT/$FILE"
-                  echo "🔗 SourceForge direct link: $DIRECT_URL"
+                  echo "::add-mask::$DIRECT_URL"
                   url="$DIRECT_URL"
+                  echo "🔗 SourceForge direct link resolved (masked)"
                 fi
                 ;;
             esac
@@ -500,7 +538,7 @@ jobs:
           }
 
           if ! download_with_fallback "$URL" "framework.jar"; then
-            echo "❌ Error: All download methods failed for URL: $URL"
+            echo "❌ Error: All download methods failed (URL masked)"
             echo "💡 Supported platforms: Google Drive, MEGA, MediaFire, Dropbox, GitHub, SourceForge, direct links"
             exit 1
           fi
@@ -576,13 +614,15 @@ jobs:
   # ============================================================
   # JOB 4: Build MRT Reborn
   #         -> berjalan setelah oem-port
-  #         -> tetap jalan meski oem-port di-skip / gagal
+  #         -> di-skip jika build_pif_only = true
   # ============================================================
   build-mrt:
     name: MRT Reborn - ${{ matrix.arch }}
     runs-on: ubuntu-latest
     needs: [oem-port]
-    if: ${{ !cancelled() }}
+    if: >-
+      ${{ !cancelled() &&
+          github.event.inputs.build_pif_only != 'true' }}
     strategy:
       fail-fast: false
       matrix:

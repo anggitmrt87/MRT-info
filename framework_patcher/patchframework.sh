@@ -43,10 +43,10 @@ trap on_error ERR
 
 banner() {
     printf '%s%s\n' "$C_BOLD$C_CYAN" ""
-    printf '  ┌───────────────────────────────────────────────────┐\n'
+    printf '  ┌─────────────────────────────────────────────────────┐\n'
     printf '  │           framework.jar  ·  patcher               │\n'
     printf '  │           OemPorts10TUtils  ·  hook suite         │\n'
-    printf '  └───────────────────────────────────────────────────┘%s\n' "$C_RESET"
+    printf '  └─────────────────────────────────────────────────────┘%s\n' "$C_RESET"
     printf '  %sworking dir:%s %s\n' "$C_GRAY" "$C_RESET" "$dirnow"
     printf '  %sstarted at :%s %s\n\n' "$C_GRAY" "$C_RESET" "$(date '+%Y-%m-%d %H:%M:%S')"
 }
@@ -104,9 +104,9 @@ genCertificate() {
 }
 
 onGetKeyEntry() {
-    local descReg="$1" resultReg="$2"
+    local descReg="$1"
     printf '    invoke-static {p0, v0, %s}, Lcom/android/internal/util/danda/OemPorts10TUtils;->onGetKeyEntry(Ljava/lang/Object;Ljava/lang/Object;Landroid/system/keystore2/KeyDescriptor;)Landroid/system/keystore2/KeyEntryResponse;\n\n    move-result-object %s\n\n    if-eqz %s, :cond_skip_spoofing\n\n    return-object %s\n\n    :cond_skip_spoofing\n' \
-        "$descReg" "$resultReg" "$resultReg" "$resultReg"
+        "$descReg" "$descReg" "$descReg" "$descReg"
 }
 
 onDeleteKey() {
@@ -255,10 +255,8 @@ sub "deleteKey hook applied (descReg=$descReg)"
 
 # --- getKeyEntry ---
 descReg=$(grep -E ', "descriptor" ' getKeyEntry_tmp | head -n1 | awk '{print $2}' | awk -F ',' '{print $1}')
-resultReg=$(grep -E 'return-object '   getKeyEntry_tmp | tail -n1 | awk '{print $2}')
-[[ -n $descReg   ]] || die "getKeyEntry: descriptor register not found"
-[[ -n $resultReg ]] || die "getKeyEntry: return register not found"
-getkey_payload=$(onGetKeyEntry "$descReg" "$resultReg")
+[[ -n $descReg ]] || die "getKeyEntry: descriptor register not found"
+getkey_payload=$(onGetKeyEntry "$descReg")
 awk -v payload="$getkey_payload" '
     /invoke-virtual .*, Landroid\/security\/KeyStore2;->handleRemoteExceptionWithRetry/ {
         print payload
@@ -266,7 +264,7 @@ awk -v payload="$getkey_payload" '
     }
     { print $0 }
 ' getKeyEntry_tmp >> "frmwrk/$keystore2classfile"
-sub "getKeyEntry hook applied (descReg=$descReg, resultReg=$resultReg)"
+sub "getKeyEntry hook applied (descReg=$descReg)"
 
 # --- generateKey ---
 descReg=$(grep -E '.local' genKey_tmp | grep -E ', "descriptor"' | head -n1 | awk '{print $2}' | awk -F ',' '{print $1}')
@@ -339,9 +337,9 @@ ss=$(( elapsed % 60 ))
 
 out_size=$(du -h "$dirnow/framework.jar" | awk '{print $1}')
 
-printf '\n%s%s╔═══════════════════════════════════════════════════╗%s\n' "$C_BOLD$C_GREEN" "" "$C_RESET"
+printf '\n%s%s╔══════════════════════════════════════════════════════════╗%s\n' "$C_BOLD$C_GREEN" "" "$C_RESET"
 printf '%s%s║              BUILD SUCCESSFUL                     ║%s\n' "$C_BOLD$C_GREEN" "" "$C_RESET"
-printf '%s%s╚═══════════════════════════════════════════════════╝%s\n' "$C_BOLD$C_GREEN" "" "$C_RESET"
+printf '%s%s╚══════════════════════════════════════════════════════════╝%s\n' "$C_BOLD$C_GREEN" "" "$C_RESET"
 printf '  %soutput   :%s %s\n'        "$C_GRAY" "$C_RESET" "$dirnow/framework.jar"
 printf '  %ssize     :%s %s\n'        "$C_GRAY" "$C_RESET" "$out_size"
 printf '  %sduration :%s %dm %02ds\n' "$C_GRAY" "$C_RESET" "$mm" "$ss"
