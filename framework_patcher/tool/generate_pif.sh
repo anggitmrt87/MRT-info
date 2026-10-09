@@ -264,7 +264,8 @@ mkdir -p "$(dirname "$OUTPUT_ARRAYS")"
 } > "$OUTPUT_ARRAYS"
 
 # ============================================================
-# [*] Auto-generate versionCode & versionName di AndroidManifest
+# [*] Auto-generate versionCode (integer YYYYMMDD) & versionName (YYYY.MM.DD)
+#     versionCode WAJIB integer — aapt/aapt2 akan menolak format bertitik
 # ============================================================
 update_manifest_version() {
     local manifest="$1"
@@ -275,8 +276,8 @@ update_manifest_version() {
     fi
 
     local VERSION_CODE VERSION_NAME
-    VERSION_CODE="$(date +%Y.%m.%d)"    # contoh: 2026.10.10
-    VERSION_NAME="$(date +%Y%m%d)"      # contoh: 20261010
+    VERSION_CODE="$(date +%Y%m%d)"      # integer, contoh: 20261010
+    VERSION_NAME="$(date +%Y.%m.%d)"    # string, contoh: 2026.10.10
 
     # Deteksi sed GNU vs BSD
     local SED_INPLACE
@@ -293,7 +294,7 @@ update_manifest_version() {
 
     echo "[*] AndroidManifest diperbarui:"
     echo "    Path         : $manifest"
-    echo "    versionCode  : $VERSION_CODE"
+    echo "    versionCode  : $VERSION_CODE (integer)"
     echo "    versionName  : $VERSION_NAME"
     return 0
 }
@@ -330,6 +331,6 @@ echo "============================================"
 echo " ✅ Selesai!"
 echo "   - $OUTPUT_ARRAYS"
 echo "   - $OUTPUT_INFO"
-echo "   - $MANIFEST (versionCode=$(date +%Y.%m.%d), versionName=$(date +%Y%m%d))"
+echo "   - $MANIFEST (versionCode=$(date +%Y%m%d), versionName=$(date +%Y.%m.%d))"
 echo "   Keybox items: ${KEYBOX_ITEM_COUNT}"
 echo "============================================"
