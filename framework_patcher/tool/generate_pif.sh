@@ -9,6 +9,7 @@ KEYBOX_URL="${KEYBOX_URL:-}"
 KEYBOX_XML="${KEYBOX_XML:-$SCRIPT_DIR/keybox.xml}"
 OUTPUT_ARRAYS="${OUTPUT_ARRAYS:-$PROJECT_ROOT/PIF/res/values/arrays.xml}"
 OUTPUT_INFO="${OUTPUT_INFO:-$PROJECT_ROOT/PIF/info.txt}"
+MANIFEST="${MANIFEST:-$PROJECT_ROOT/PIF/AndroidManifest.xml}"
 
 TMP_PROP=$(mktemp)
 TMP_DIR=$(mktemp -d)
@@ -262,6 +263,45 @@ mkdir -p "$(dirname "$OUTPUT_ARRAYS")"
     echo '</resources>'
 } > "$OUTPUT_ARRAYS"
 
+# ============================================================
+# [*] Auto-generate versionCode & versionName di AndroidManifest
+# ============================================================
+update_manifest_version() {
+    local manifest="$1"
+
+    if [[ ! -f "$manifest" ]]; then
+        echo "[!] $manifest tidak ditemukan, lewati update versi." >&2
+        return 1
+    fi
+
+    local VERSION_CODE VERSION_NAME
+    VERSION_CODE="$(date +%Y.%m.%d)"    # contoh: 2026.10.10
+    VERSION_NAME="$(date +%Y%m%d)"      # contoh: 20261010
+
+    # Deteksi sed GNU vs BSD
+    local SED_INPLACE
+    if sed --version >/dev/null 2>&1; then
+        SED_INPLACE=(-i -E)
+    else
+        SED_INPLACE=(-i '' -E)
+    fi
+
+    sed "${SED_INPLACE[@]}" \
+        -e "s/(android:versionCode=\")[^\"]*(\")/\1${VERSION_CODE}\2/" \
+        -e "s/(android:versionName=\")[^\"]*(\")/\1${VERSION_NAME}\2/" \
+        "$manifest"
+
+    echo "[*] AndroidManifest diperbarui:"
+    echo "    Path         : $manifest"
+    echo "    versionCode  : $VERSION_CODE"
+    echo "    versionName  : $VERSION_NAME"
+    return 0
+}
+
+echo ""
+echo "[*] Update AndroidManifest.xml version..."
+update_manifest_version "$MANIFEST" || true
+
 echo "[*] Menulis $OUTPUT_INFO..."
 mkdir -p "$(dirname "$OUTPUT_INFO")"
 
@@ -290,5 +330,6 @@ echo "============================================"
 echo " ✅ Selesai!"
 echo "   - $OUTPUT_ARRAYS"
 echo "   - $OUTPUT_INFO"
+echo "   - $MANIFEST (versionCode=$(date +%Y.%m.%d), versionName=$(date +%Y%m%d))"
 echo "   Keybox items: ${KEYBOX_ITEM_COUNT}"
 echo "============================================"
