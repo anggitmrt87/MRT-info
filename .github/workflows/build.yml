@@ -42,25 +42,15 @@ jobs:
         run: |
           cd ${{ github.workspace }}/framework_patcher/tool
           chmod +x generate_pif.sh
-
-          if [[ -z "$KEYBOX_URL" ]]; then
-            echo "keybox_url tidak diisi - menggunakan keybox.xml lokal"
-          else
-            echo "Download keybox dari: $KEYBOX_URL"
-          fi
-
           bash generate_pif.sh
 
       - name: Show generated info.txt
-        run: |
-          cat ${{ github.workspace }}/PIF/info.txt
+        run: cat ${{ github.workspace }}/PIF/info.txt
 
       - name: Build APK's
         run: |
           cd ${{ github.workspace }}/framework_patcher/tool
-          chmod +x build.sh
-          chmod +x aapt
-          chmod +x aapt2
+          chmod +x build.sh aapt aapt2
           bash build.sh
 
       - name: Upload APK (artifact)
@@ -80,36 +70,38 @@ jobs:
 
           mkdir -p /tmp/publish
 
-          if [ ! -f "${{ github.workspace }}/PIF/info.txt" ]; then
-            echo "info.txt tidak ditemukan"
-            exit 1
+          if [ ! -f "${GITHUB_WORKSPACE}/PIF/info.txt" ]; then
+            echo "info.txt tidak ditemukan"; exit 1
           fi
-          cp "${{ github.workspace }}/PIF/info.txt" /tmp/publish/info.txt
+          cp "${GITHUB_WORKSPACE}/PIF/info.txt" /tmp/publish/info.txt
 
-          APK=$(find "${{ github.workspace }}/product/overlay" \
-                      "${{ github.workspace }}/vendor/overlay" \
-                      -name "*.apk" 2>/dev/null | head -n1)
+          APK=$(find "${GITHUB_WORKSPACE}/product/overlay" \
+                     "${GITHUB_WORKSPACE}/vendor/overlay" \
+                     -name "*.apk" 2>/dev/null | head -n1)
           if [ -z "$APK" ]; then
-            echo "APK hasil build tidak ditemukan"
-            exit 1
+            echo "APK tidak ditemukan"; exit 1
           fi
-          echo "APK ditemukan: $APK"
+          echo "APK: $APK"
           cp "$APK" /tmp/publish/PIF.apk
 
           cd /tmp
           rm -rf publish-repo
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" publish-repo
+          git clone "https://anggitmrt87:${GH_TOKEN}@github.com/${REPO}.git" publish-repo
           cd publish-repo
 
-          if git ls-remote --exit-code --heads origin pif > /dev/null 2>&1; then
-            git checkout pif
-          else
-            git checkout --orphan pif
-            git rm -rf . > /dev/null 2>&1 || true
-          fi
-
-          git config user.name "github-actions[bot]"
+          git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --heads origin pif >/dev/null 2>&1; then
+            echo "Branch pif sudah ada - checkout"
+            git fetch origin pif
+            git checkout -B pif origin/pif
+          else
+            echo "Branch pif belum ada - buat orphan"
+            git checkout --orphan pif
+            git rm -rf . >/dev/null 2>&1 || true
+            find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} + 2>/dev/null || true
+          fi
 
           CHANGED=0
 
@@ -134,9 +126,9 @@ jobs:
             exit 0
           fi
 
-          git add PIF.apk info.txt
+          git add -f PIF.apk info.txt
           git commit -m "Update PIF artifacts $(date -u +%Y-%m-%d_%H-%M-%S)"
-          git push origin pif
+          git push origin HEAD:pif
           echo "Push ke branch pif berhasil"
 
   oem-port:
