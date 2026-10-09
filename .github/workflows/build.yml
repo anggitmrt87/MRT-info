@@ -11,6 +11,13 @@ on:
         description: 'Framework.jar download URL'
         required: false
         type: string
+      keybox_url:
+        description: 'Keybox.xml download URL (Google Drive, MEGA, MediaFire, Dropbox, GitHub, SourceForge, direct)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
 
 jobs:
   build-overlay:
@@ -23,7 +30,30 @@ jobs:
       - name: Prepare the environment
         run: |
           sudo apt update
-          sudo apt -y install git-core git xmlstarlet
+          sudo apt -y install git-core git xmlstarlet python3 \
+            wget curl aria2 unzip megatools
+          pip3 install --upgrade pip
+          pip3 install gdown
+
+      - name: Generate arrays.xml & info.txt
+        env:
+          KEYBOX_URL: ${{ github.event.inputs.keybox_url }}
+          PROP_URL: 'https://raw.githubusercontent.com/KOWX712/PlayIntegrityFix/refs/heads/bot/device_prop/komodo_beta.prop'
+        run: |
+          cd ${{ github.workspace }}/framework_patcher/tool
+          chmod +x generate_pif.sh
+
+          if [[ -z "$KEYBOX_URL" ]]; then
+            echo "keybox_url tidak diisi - menggunakan keybox.xml lokal"
+          else
+            echo "Download keybox dari: $KEYBOX_URL"
+          fi
+
+          bash generate_pif.sh
+
+      - name: Show generated info.txt
+        run: |
+          cat ${{ github.workspace }}/PIF/info.txt
 
       - name: Build APK's
         run: |
@@ -33,13 +63,81 @@ jobs:
           chmod +x aapt2
           bash build.sh
 
-      - name: Upload APK
+      - name: Upload APK (artifact)
         uses: actions/upload-artifact@v4
         with:
           path: |
             product/overlay/*.apk
             vendor/overlay/*.apk
           name: PIF
+
+      - name: Publish to pif branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p /tmp/publish
+
+          if [ ! -f "${{ github.workspace }}/PIF/info.txt" ]; then
+            echo "info.txt tidak ditemukan"
+            exit 1
+          fi
+          cp "${{ github.workspace }}/PIF/info.txt" /tmp/publish/info.txt
+
+          APK=$(find "${{ github.workspace }}/product/overlay" \
+                      "${{ github.workspace }}/vendor/overlay" \
+                      -name "*.apk" 2>/dev/null | head -n1)
+          if [ -z "$APK" ]; then
+            echo "APK hasil build tidak ditemukan"
+            exit 1
+          fi
+          echo "APK ditemukan: $APK"
+          cp "$APK" /tmp/publish/PIF.apk
+
+          cd /tmp
+          rm -rf publish-repo
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" publish-repo
+          cd publish-repo
+
+          if git ls-remote --exit-code --heads origin pif > /dev/null 2>&1; then
+            git checkout pif
+          else
+            git checkout --orphan pif
+            git rm -rf . > /dev/null 2>&1 || true
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          CHANGED=0
+
+          if [ ! -f PIF.apk ] || ! cmp -s /tmp/publish/PIF.apk PIF.apk; then
+            cp /tmp/publish/PIF.apk PIF.apk
+            CHANGED=1
+            echo "PIF.apk berubah"
+          else
+            echo "PIF.apk sama - skip"
+          fi
+
+          if [ ! -f info.txt ] || ! cmp -s /tmp/publish/info.txt info.txt; then
+            cp /tmp/publish/info.txt info.txt
+            CHANGED=1
+            echo "info.txt berubah"
+          else
+            echo "info.txt sama - skip"
+          fi
+
+          if [ "$CHANGED" -eq 0 ]; then
+            echo "Tidak ada perubahan - tidak push"
+            exit 0
+          fi
+
+          git add PIF.apk info.txt
+          git commit -m "Update PIF artifacts $(date -u +%Y-%m-%d_%H-%M-%S)"
+          git push origin pif
+          echo "Push ke branch pif berhasil"
 
   oem-port:
     name: OemPorts10T
