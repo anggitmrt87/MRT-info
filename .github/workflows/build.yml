@@ -64,45 +64,68 @@ jobs:
       - name: Publish to pif branch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          mkdir -p /tmp/publish
+          echo "=== Debug ==="
+          echo "WORKSPACE: ${GITHUB_WORKSPACE}"
+          echo "REPO: ${{ github.repository }}"
+          echo "PWD: $(pwd)"
+          echo "GH_TOKEN length: ${#GH_TOKEN}"
+
+          echo "=== Cek file hasil ==="
+          ls -la "${GITHUB_WORKSPACE}/PIF/" || true
+          ls -la "${GITHUB_WORKSPACE}/product/overlay/" 2>/dev/null || echo "product/overlay tidak ada"
+          ls -la "${GITHUB_WORKSPACE}/vendor/overlay/" 2>/dev/null || echo "vendor/overlay tidak ada"
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::GH_TOKEN kosong. Cek Settings > Actions > General > Workflow permissions = Read and write"
+            exit 1
+          fi
 
           if [ ! -f "${GITHUB_WORKSPACE}/PIF/info.txt" ]; then
-            echo "info.txt tidak ditemukan"; exit 1
+            echo "::error::info.txt tidak ada di ${GITHUB_WORKSPACE}/PIF/"
+            exit 1
           fi
+
+          mkdir -p /tmp/publish
           cp "${GITHUB_WORKSPACE}/PIF/info.txt" /tmp/publish/info.txt
 
           APK=$(find "${GITHUB_WORKSPACE}/product/overlay" \
                      "${GITHUB_WORKSPACE}/vendor/overlay" \
-                     -name "*.apk" 2>/dev/null | head -n1)
+                     -name "*.apk" 2>/dev/null | head -n1 || true)
           if [ -z "$APK" ]; then
-            echo "APK tidak ditemukan"; exit 1
+            echo "::error::APK tidak ditemukan"
+            find "${GITHUB_WORKSPACE}" -name "*.apk" 2>/dev/null || true
+            exit 1
           fi
           echo "APK: $APK"
           cp "$APK" /tmp/publish/PIF.apk
 
+          echo "=== Git clone ==="
           cd /tmp
           rm -rf publish-repo
-          git clone "https://anggitmrt87:${GH_TOKEN}@github.com/${REPO}.git" publish-repo
+          git clone --depth 1 \
+            "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" \
+            publish-repo
           cd publish-repo
 
+          echo "=== Setup branch pif ==="
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           if git ls-remote --exit-code --heads origin pif >/dev/null 2>&1; then
-            echo "Branch pif sudah ada - checkout"
-            git fetch origin pif
-            git checkout -B pif origin/pif
+            echo "Branch pif ada, checkout"
+            git fetch --depth 1 origin pif
+            git checkout -B pif FETCH_HEAD
           else
-            echo "Branch pif belum ada - buat orphan"
+            echo "Branch pif belum ada, buat orphan"
             git checkout --orphan pif
             git rm -rf . >/dev/null 2>&1 || true
             find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} + 2>/dev/null || true
           fi
 
+          echo "=== Bandingkan file ==="
           CHANGED=0
 
           if [ ! -f PIF.apk ] || ! cmp -s /tmp/publish/PIF.apk PIF.apk; then
@@ -110,7 +133,7 @@ jobs:
             CHANGED=1
             echo "PIF.apk berubah"
           else
-            echo "PIF.apk sama - skip"
+            echo "PIF.apk sama, skip"
           fi
 
           if [ ! -f info.txt ] || ! cmp -s /tmp/publish/info.txt info.txt; then
@@ -118,18 +141,18 @@ jobs:
             CHANGED=1
             echo "info.txt berubah"
           else
-            echo "info.txt sama - skip"
+            echo "info.txt sama, skip"
           fi
 
           if [ "$CHANGED" -eq 0 ]; then
-            echo "Tidak ada perubahan - tidak push"
+            echo "Tidak ada perubahan, tidak push"
             exit 0
           fi
 
           git add -f PIF.apk info.txt
           git commit -m "Update PIF artifacts $(date -u +%Y-%m-%d_%H-%M-%S)"
           git push origin HEAD:pif
-          echo "Push ke branch pif berhasil"
+          echo "Push ke pif berhasil"
 
   oem-port:
     name: OemPorts10T
