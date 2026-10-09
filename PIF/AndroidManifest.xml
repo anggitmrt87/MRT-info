@@ -6,7 +6,11 @@
     android:compileSdkVersionCodename="1.0"
     android:versionCode="2026.10.09"
     android:versionName="20261009">
-    
+
+    <uses-sdk
+        android:minSdkVersion="30"
+        android:targetSdkVersion="36" />
+
     <application
         android:hasCode="false"
         android:extractNativeLibs="true"
