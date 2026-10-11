@@ -1,25 +1,635 @@
-name: Build MRT Reborn
+name: MRT Reborn OEM
 
 on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
   workflow_dispatch:
+    inputs:
+      build_pif_only:
+        description: 'Build PIF only (skip pif-updater, framework patch, MRT)'
+        required: false
+        type: boolean
+        default: false
+      android_version:
+        description: 'Android Version (12, 13, 14, 15, 16)'
+        required: false
+        type: string
+      framework_url:
+        description: 'Framework.jar download URL'
+        required: false
+        type: string
+      keybox_url:
+        description: 'Keybox.xml download URL (Google Drive, MEGA, MediaFire, Dropbox, GitHub, SourceForge, direct)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
 
 jobs:
-  build:
-    name: ${{ matrix.arch }}
+  # ============================================================
+  # JOB 1: Build PIF overlay APK
+  # ============================================================
+  build-overlay:
+    name: Build PIF
     runs-on: ubuntu-latest
+    steps:
+      - name: Check Out
+        uses: actions/checkout@main
+
+      - name: Prepare the environment
+        run: |
+          sudo apt update
+          sudo apt -y install git-core git xmlstarlet python3 \
+            wget curl aria2 unzip megatools
+          pip3 install --upgrade pip
+          pip3 install gdown
+
+      - name: Mask sensitive URLs
+        env:
+          KEYBOX_URL: ${{ github.event.inputs.keybox_url }}
+          FRAMEWORK_URL: ${{ github.event.inputs.framework_url }}
+        run: |
+          if [ -n "$KEYBOX_URL" ]; then
+            echo "::add-mask::$KEYBOX_URL"
+          fi
+          if [ -n "$FRAMEWORK_URL" ]; then
+            echo "::add-mask::$FRAMEWORK_URL"
+          fi
+
+      - name: Generate arrays.xml & info.txt
+        env:
+          KEYBOX_URL: ${{ github.event.inputs.keybox_url }}
+          PROP_URL: 'https://raw.githubusercontent.com/KOWX712/PlayIntegrityFix/refs/heads/bot/device_prop/komodo_beta.prop'
+        run: |
+          cd ${{ github.workspace }}/framework_patcher/tool
+          chmod +x generate_pif.sh
+          bash generate_pif.sh
+
+      - name: Show generated info.txt
+        run: cat ${{ github.workspace }}/PIF/info.txt
+
+      - name: Build APK's
+        run: |
+          cd ${{ github.workspace }}/framework_patcher/tool
+          chmod +x build.sh aapt aapt2
+          bash build.sh
+
+      - name: Upload APK (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          path: |
+            product/overlay/*.apk
+            vendor/overlay/*.apk
+          name: PIF
+
+      - name: Publish to pif branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          echo "=== Debug ==="
+          echo "WORKSPACE: ${GITHUB_WORKSPACE}"
+          echo "REPO: ${{ github.repository }}"
+          echo "PWD: $(pwd)"
+          echo "GH_TOKEN length: ${#GH_TOKEN}"
+
+          echo "=== Cek file hasil ==="
+          ls -la "${GITHUB_WORKSPACE}/PIF/" || true
+          ls -la "${GITHUB_WORKSPACE}/product/overlay/" 2>/dev/null || echo "product/overlay tidak ada"
+          ls -la "${GITHUB_WORKSPACE}/vendor/overlay/" 2>/dev/null || echo "vendor/overlay tidak ada"
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::GH_TOKEN kosong. Cek Settings > Actions > General > Workflow permissions = Read and write"
+            exit 1
+          fi
+
+          if [ ! -f "${GITHUB_WORKSPACE}/PIF/info.txt" ]; then
+            echo "::error::info.txt tidak ada di ${GITHUB_WORKSPACE}/PIF/"
+            exit 1
+          fi
+
+          mkdir -p /tmp/publish
+          cp "${GITHUB_WORKSPACE}/PIF/info.txt" /tmp/publish/info.txt
+
+          APK=$(find "${GITHUB_WORKSPACE}/product/overlay" \
+                     "${GITHUB_WORKSPACE}/vendor/overlay" \
+                     -name "*.apk" 2>/dev/null | head -n1 || true)
+          if [ -z "$APK" ]; then
+            echo "::error::APK tidak ditemukan"
+            find "${GITHUB_WORKSPACE}" -name "*.apk" 2>/dev/null || true
+            exit 1
+          fi
+          echo "APK: $APK"
+          cp "$APK" /tmp/publish/PIF.apk
+
+          echo "=== Git clone ==="
+          cd /tmp
+          rm -rf publish-repo
+          git clone --depth 1 \
+            "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" \
+            publish-repo
+          cd publish-repo
+
+          echo "=== Setup branch pif ==="
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --heads origin pif >/dev/null 2>&1; then
+            echo "Branch pif ada, checkout"
+            git fetch --depth 1 origin pif
+            git checkout -B pif FETCH_HEAD
+          else
+            echo "Branch pif belum ada, buat orphan"
+            git checkout --orphan pif
+            git rm -rf . >/dev/null 2>&1 || true
+            find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} + 2>/dev/null || true
+          fi
+
+          echo "=== Bandingkan file ==="
+          CHANGED=0
+
+          if [ ! -f PIF.apk ] || ! cmp -s /tmp/publish/PIF.apk PIF.apk; then
+            cp /tmp/publish/PIF.apk PIF.apk
+            CHANGED=1
+            echo "PIF.apk berubah"
+          else
+            echo "PIF.apk sama, skip"
+          fi
+
+          if [ ! -f info.txt ] || ! cmp -s /tmp/publish/info.txt info.txt; then
+            cp /tmp/publish/info.txt info.txt
+            CHANGED=1
+            echo "info.txt berubah"
+          else
+            echo "info.txt sama, skip"
+          fi
+
+          if [ "$CHANGED" -eq 0 ]; then
+            echo "Tidak ada perubahan, tidak push"
+            exit 0
+          fi
+
+          git add -f PIF.apk info.txt
+          git commit -m "Update PIF artifacts $(date -u +%Y-%m-%d_%H-%M-%S)"
+          git push origin HEAD:pif
+          echo "Push ke pif berhasil"
+
+  # ============================================================
+  # JOB 2: Build pif-updater (Rust binary Android)
+  #         -> berjalan setelah build-overlay
+  #         -> di-skip jika build_pif_only = true
+  # ============================================================
+  build-pif-updater:
+    name: pif-updater - ${{ matrix.arch_name }}
+    runs-on: ubuntu-latest
+    needs: [build-overlay]
+    if: >-
+      ${{ !cancelled() &&
+          github.event.inputs.build_pif_only != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-linux-android
+            api: 24
+            arch_name: arm64
+          - target: armv7-linux-androideabi
+            api: 24
+            arch_name: arm
+          - target: x86_64-linux-android
+            api: 24
+            arch_name: x64
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+          add-to-path: false
+          local-cache: true
+
+      - name: Configure cargo linker
+        run: |
+          mkdir -p .cargo
+          case "${{ matrix.target }}" in
+            aarch64-linux-android)
+              LINKER="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${{ matrix.api }}-clang"
+              ;;
+            armv7-linux-androideabi)
+              LINKER="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi${{ matrix.api }}-clang"
+              ;;
+            x86_64-linux-android)
+              LINKER="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android${{ matrix.api }}-clang"
+              ;;
+          esac
+          cat > .cargo/config.toml <<EOF
+          [target.${{ matrix.target }}]
+          linker = "$LINKER"
+          EOF
+          cat .cargo/config.toml
+
+      - name: Build release
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p out
+          cp target/${{ matrix.target }}/release/pif-updater \
+             out/pif-updater-${{ matrix.arch_name }}
+          chmod +x out/pif-updater-${{ matrix.arch_name }}
+          ls -lh out/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pif-updater-${{ matrix.arch_name }}
+          path: out/pif-updater-${{ matrix.arch_name }}
+          if-no-files-found: error
+
+  # ============================================================
+  # JOB 3: Patch framework.jar
+  #         -> berjalan setelah pif-updater
+  #         -> hanya jika input android_version & framework_url diisi
+  #         -> di-skip jika build_pif_only = true
+  # ============================================================
+  oem-port:
+    name: OemPorts10T
+    runs-on: ubuntu-latest
+    needs: [build-pif-updater]
+    if: >-
+      ${{ !cancelled() &&
+          github.event.inputs.build_pif_only != 'true' &&
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.android_version != '' &&
+          github.event.inputs.framework_url != '' }}
+    timeout-minutes: 30
+    env:
+      NDK_VERSION: '29.0.14206865'
+      CMDLINE_TOOLS_VERSION: '12266719'
+    outputs:
+      ndk-home: ${{ steps.setup-ndk.outputs.ndk-home }}
+      android-sdk-version: ${{ env.ANDROID_SDK_VERSION }}
+      build-tools-version: ${{ env.BUILD_TOOLS_VERSION }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Inputs
+        run: |
+          if [[ ! "${{ github.event.inputs.android_version }}" =~ ^(12|13|14|15|16)$ ]]; then
+            echo "❌ Error: Invalid Android version. Must be 12, 13, 14, 15, or 16"
+            exit 1
+          fi
+
+          if [[ -z "${{ github.event.inputs.framework_url }}" ]]; then
+            echo "❌ Error: Framework URL cannot be empty"
+            exit 1
+          fi
+
+          echo "✅ Input validation passed"
+
+      - name: Setup Android Version
+        run: |
+          case "${{ github.event.inputs.android_version }}" in
+            12)
+              echo "ANDROID_SDK_VERSION=32" >> $GITHUB_ENV
+              echo "BUILD_TOOLS_VERSION=32.0.0" >> $GITHUB_ENV
+              ;;
+            13)
+              echo "ANDROID_SDK_VERSION=33" >> $GITHUB_ENV
+              echo "BUILD_TOOLS_VERSION=33.0.0" >> $GITHUB_ENV
+              ;;
+            14)
+              echo "ANDROID_SDK_VERSION=34" >> $GITHUB_ENV
+              echo "BUILD_TOOLS_VERSION=34.0.0" >> $GITHUB_ENV
+              ;;
+            15)
+              echo "ANDROID_SDK_VERSION=35" >> $GITHUB_ENV
+              echo "BUILD_TOOLS_VERSION=35.0.0" >> $GITHUB_ENV
+              ;;
+            16)
+              echo "ANDROID_SDK_VERSION=36" >> $GITHUB_ENV
+              echo "BUILD_TOOLS_VERSION=36.0.0" >> $GITHUB_ENV
+              ;;
+          esac
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          log-accepted-android-sdk-licenses: false
+          cmdline-tools-version: ${{ env.CMDLINE_TOOLS_VERSION }}
+          packages: 'platforms;android-${{ env.ANDROID_SDK_VERSION }} build-tools;${{ env.BUILD_TOOLS_VERSION }} platform-tools'
+
+      - name: Install Download Tools
+        run: |
+          echo "📥 Installing download tools..."
+          sudo apt-get install -y \
+            wget \
+            curl \
+            python3 \
+            python3-pip \
+            aria2 \
+            unzip
+
+          pip3 install gdown
+          sudo apt-get install -y megatools
+          sudo apt-get install -y lftp
+
+          echo "✅ Download tools installed"
+
+      - name: Install NDK
+        id: setup-ndk
+        run: |
+          echo "📥 Installing NDK version ${{ env.NDK_VERSION }}..."
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            --channel=0 \
+            --install "ndk;${{ env.NDK_VERSION }}"
+
+          NDK_PATH="$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}"
+
+          echo "NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
+          echo "ndk-home=$NDK_PATH" >> $GITHUB_OUTPUT
+
+          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/build-tools/${{ env.BUILD_TOOLS_VERSION }}" >> $GITHUB_PATH
+
+          echo "✅ NDK installed at: $NDK_PATH"
+
+      - name: Verify NDK Installation
+        run: |
+          echo "🔍 Verifying NDK installation..."
+          echo "NDK_HOME: $NDK_HOME"
+          echo "ANDROID_NDK_HOME: $ANDROID_NDK_HOME"
+
+          if [ ! -d "$NDK_HOME" ]; then
+            echo "❌ Error: NDK directory not found"
+            exit 1
+          fi
+
+          ls -la "$NDK_HOME" || exit 1
+          echo "✅ NDK verification successful"
+
+      - name: Download Framework
+        id: download-framework
+        env:
+          FRAMEWORK_URL_INPUT: ${{ github.event.inputs.framework_url }}
+        run: |
+          set -euo pipefail
+
+          echo "📥 Downloading framework.jar..."
+
+          # Mask base URL immediately
+          if [ -n "$FRAMEWORK_URL_INPUT" ]; then
+            echo "::add-mask::$FRAMEWORK_URL_INPUT"
+          fi
+
+          cd ${{ github.workspace }}/framework_patcher
+
+          URL="$FRAMEWORK_URL_INPUT"
+
+          detect_url_type() {
+            if [[ "$1" == *"drive.google.com"* ]] || [[ "$1" == *"docs.google.com"* ]]; then
+              echo "google_drive"
+            elif [[ "$1" == *"mega.nz"* ]] || [[ "$1" == *"mega.co.nz"* ]]; then
+              echo "mega"
+            elif [[ "$1" == *"mediafire.com"* ]]; then
+              echo "mediafire"
+            elif [[ "$1" == *"dropbox.com"* ]]; then
+              echo "dropbox"
+            elif [[ "$1" == *"github.com"* ]] || [[ "$1" == *"raw.githubusercontent.com"* ]]; then
+              echo "direct"
+            elif [[ "$1" == *"sourceforge.net"* ]]; then
+              echo "sourceforge"
+            else
+              echo "direct"
+            fi
+          }
+
+          URL_TYPE=$(detect_url_type "$URL")
+          echo "Detected URL type: $URL_TYPE"
+          echo "🔒 URL is masked in logs"
+
+          download_with_fallback() {
+            local url=$1
+            local output=$2
+
+            echo "🔧 Attempting to download (method: $URL_TYPE)"
+
+            case $URL_TYPE in
+              "google_drive")
+                if [[ $url =~ /d/([^/]+) ]]; then
+                  FILE_ID="${BASH_REMATCH[1]}"
+                elif [[ $url =~ id=([^&]+) ]]; then
+                  FILE_ID="${BASH_REMATCH[1]}"
+                else
+                  FILE_ID=$(echo "$url" | grep -o '[^/]*$')
+                fi
+
+                if [ -n "$FILE_ID" ]; then
+                  echo "::add-mask::$FILE_ID"
+                fi
+                echo "📁 Google Drive file detected"
+
+                if command -v gdown &> /dev/null; then
+                  echo "⬇️ Downloading with gdown..."
+                  if gdown "https://drive.google.com/uc?id=$FILE_ID" -O "$output"; then
+                    echo "✅ Google Drive download successful with gdown"
+                    return 0
+                  fi
+                fi
+
+                echo "🔄 Trying curl method for Google Drive..."
+                CONFIRM=$(wget --quiet --save-cookies /tmp/cookies.txt --keep-session-cookies --no-check-certificate "https://docs.google.com/uc?export=download&id=$FILE_ID" -O- | sed -rn 's/.*confirm=([0-9A-Za-z_]+).*/\1/p')
+                if [ -n "$CONFIRM" ]; then
+                  echo "::add-mask::$CONFIRM"
+                fi
+                if wget --load-cookies /tmp/cookies.txt "https://docs.google.com/uc?export=download&confirm=$CONFIRM&id=$FILE_ID" -O "$output"; then
+                  echo "✅ Google Drive download successful with curl"
+                  return 0
+                fi
+                ;;
+
+              "mega")
+                if command -v megadl &> /dev/null; then
+                  echo "⬇️ Downloading with megatools..."
+                  if megadl "$url" --path "$output"; then
+                    echo "✅ MEGA download successful"
+                    return 0
+                  fi
+                fi
+                ;;
+
+              "mediafire")
+                echo "⬇️ Downloading from MediaFire..."
+                DIRECT_URL=$(curl -s "$url" | grep -o 'https://download[^"]*' | head -1 || true)
+                if [ -n "$DIRECT_URL" ]; then
+                  echo "::add-mask::$DIRECT_URL"
+                  url="$DIRECT_URL"
+                  echo "🔗 Direct MediaFire link resolved (masked)"
+                fi
+                ;;
+
+              "dropbox")
+                echo "⬇️ Downloading from Dropbox..."
+                if [[ $url == *"?dl=0"* ]]; then
+                  url="${url/?dl=0/?dl=1}"
+                elif [[ $url != *"?dl=1"* ]]; then
+                  url="${url}?dl=1"
+                fi
+                echo "::add-mask::$url"
+                echo "🔗 Dropbox direct link resolved (masked)"
+                ;;
+
+              "sourceforge")
+                echo "⬇️ Downloading from SourceForge..."
+                PROJECT=$(echo "$url" | grep -o 'projects/[^/]*' | cut -d'/' -f2 || true)
+                FILE=$(echo "$url" | grep -o 'files/[^/]*' | cut -d'/' -f2 || true)
+                if [ -n "$PROJECT" ] && [ -n "$FILE" ]; then
+                  DIRECT_URL="https://downloads.sourceforge.net/project/$PROJECT/$FILE"
+                  echo "::add-mask::$DIRECT_URL"
+                  url="$DIRECT_URL"
+                  echo "🔗 SourceForge direct link resolved (masked)"
+                fi
+                ;;
+            esac
+
+            echo "🔄 Using universal download methods..."
+
+            if command -v aria2c &> /dev/null; then
+              echo "⚡ Trying aria2..."
+              if aria2c --check-certificate=false --max-tries=3 --timeout=300 --max-connection-per-server=4 "$url" -o "$output"; then
+                echo "✅ Download successful with aria2"
+                return 0
+              fi
+            fi
+
+            echo "🔗 Trying wget..."
+            if wget --progress=dot:giga --timeout=300 --tries=3 "$url" -O "$output"; then
+              echo "✅ Download successful with wget"
+              return 0
+            fi
+
+            echo "🔗 Trying curl..."
+            if curl -L --connect-timeout 300 --retry 3 --progress-bar "$url" -o "$output"; then
+              echo "✅ Download successful with curl"
+              return 0
+            fi
+
+            return 1
+          }
+
+          if ! download_with_fallback "$URL" "framework.jar"; then
+            echo "❌ Error: All download methods failed (URL masked)"
+            echo "💡 Supported platforms: Google Drive, MEGA, MediaFire, Dropbox, GitHub, SourceForge, direct links"
+            exit 1
+          fi
+
+          if [ ! -f "framework.jar" ]; then
+            echo "❌ Error: framework.jar was not downloaded"
+            exit 1
+          fi
+
+          FILESIZE=$(stat -c%s "framework.jar" 2>/dev/null || stat -f%z "framework.jar")
+          echo "📦 Downloaded framework.jar size: $FILESIZE bytes"
+
+          if [ "$FILESIZE" -lt 1000 ]; then
+            echo "❌ Error: framework.jar seems too small (only $FILESIZE bytes), download might have failed"
+            exit 1
+          fi
+
+          echo "✅ Framework download successful from $URL_TYPE"
+
+      - name: Apply Patch
+        run: |
+          echo "🔧 Applying framework patch..."
+          cd ${{ github.workspace }}/framework_patcher
+
+          if [ -f "patchframework.sh" ]; then
+            chmod +x patchframework.sh
+          else
+            echo "❌ Error: patchframework.sh not found"
+            exit 1
+          fi
+
+          if ! ./patchframework.sh; then
+            echo "❌ Error: patchframework.sh failed with exit code $?"
+            exit 1
+          fi
+
+          echo "✅ Patch applied successfully"
+
+      - name: Verify Patched Framework
+        run: |
+          echo "🔍 Verifying patched framework..."
+          FRAMEWORK_PATH="${{ github.workspace }}/framework_patcher/framework.jar"
+
+          if [ ! -f "$FRAMEWORK_PATH" ]; then
+            echo "❌ Error: framework.jar not found after patching at $FRAMEWORK_PATH"
+            exit 1
+          fi
+
+          FILESIZE=$(stat -c%s "$FRAMEWORK_PATH" 2>/dev/null || stat -f%z "$FRAMEWORK_PATH")
+          echo "📦 Patched framework.jar size: $FILESIZE bytes"
+
+          if [ "$FILESIZE" -lt 1000 ]; then
+            echo "❌ Error: Patched framework.jar seems too small, patching might have failed"
+            exit 1
+          fi
+
+          echo "✅ Patched framework verification successful"
+
+      - name: Upload Patched Framework
+        uses: actions/upload-artifact@v4
+        with:
+          name: patched-framework-android-${{ github.event.inputs.android_version }}
+          path: ${{ github.workspace }}/framework_patcher/framework.jar
+
+      - name: Success Message
+        if: success()
+        run: |
+          echo "🎉 Framework patching completed successfully!"
+          echo "📱 Android Version: ${{ github.event.inputs.android_version }}"
+          echo "🔧 SDK Version: ${{ env.ANDROID_SDK_VERSION }}"
+          echo "📤 Uploaded to artifacts successfully!"
+
+  # ============================================================
+  # JOB 4: Build MRT Reborn
+  #         -> berjalan setelah oem-port
+  #         -> di-skip jika build_pif_only = true
+  # ============================================================
+  build-mrt:
+    name: MRT Reborn - ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    needs: [oem-port]
+    if: >-
+      ${{ !cancelled() &&
+          github.event.inputs.build_pif_only != 'true' }}
     strategy:
       fail-fast: false
       matrix:
         arch: [arm64-v8a, armeabi-v7a]
-
     env:
       NDK_VERSION: r27
       API_LEVEL: 21
-
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
