@@ -13,22 +13,24 @@ TARGET_ARCH ?= arm64-v8a
 # ------------------------------
 # Nama target
 # ------------------------------
-LIB_NAME     = libmrtreborn.so
-LOADER_NAME  = mrt_loader
-SECURITY_NAME = mrt_security
+LIB_NAME           = libmrtreborn.so
+LOADER_NAME        = mrt_loader
+SECURITY_NAME      = mrt_security
+MI_CHARGER_MONITOR = micharge_monitor
+MI_CHARGER         = mrt_micharge
 
 # ------------------------------
 # Deteksi toolchain berdasarkan TARGET_ARCH
 # ------------------------------
 ifeq ($(TARGET_ARCH), arm64-v8a)
-    TRIPLE        = aarch64-linux-android
-    CLANG_PREFIX  = aarch64-linux-android$(API_LEVEL)
-    LIB_ARCH      = arm64-v8a
+    TRIPLE           = aarch64-linux-android
+    CLANG_PREFIX     = aarch64-linux-android$(API_LEVEL)
+    LIB_ARCH         = arm64-v8a
     LIB_INSTALL_PATH = /system/lib64/$(LIB_NAME)
 else ifeq ($(TARGET_ARCH), armeabi-v7a)
-    TRIPLE        = armv7a-linux-androideabi
-    CLANG_PREFIX  = armv7a-linux-androideabi$(API_LEVEL)
-    LIB_ARCH      = armeabi-v7a
+    TRIPLE           = armv7a-linux-androideabi
+    CLANG_PREFIX     = armv7a-linux-androideabi$(API_LEVEL)
+    LIB_ARCH         = armeabi-v7a
     LIB_INSTALL_PATH = /system/lib/$(LIB_NAME)
 else
     $(error Unsupported TARGET_ARCH: $(TARGET_ARCH))
@@ -40,7 +42,10 @@ CXX           = $(TOOLCHAIN_DIR)/bin/$(CLANG_PREFIX)-clang++
 LD            = $(TOOLCHAIN_DIR)/bin/ld.lld
 AR            = $(TOOLCHAIN_DIR)/bin/llvm-ar
 
-COMMON_FLAGS = -fPIC -Wall -O2 -DANDROID
+# Shim include path (cutils/properties.h)
+SHIM_DIR     = shim
+
+COMMON_FLAGS = -fPIC -Wall -O2 -DANDROID -I$(SHIM_DIR)
 CXX_FLAGS    = $(COMMON_FLAGS) -std=c++17
 C_FLAGS      = $(COMMON_FLAGS) -std=c11
 
@@ -50,7 +55,8 @@ LDFLAGS      = -L$(TOOLCHAIN_DIR)/sysroot/usr/lib/$(TRIPLE)/$(API_LEVEL) \
 # ------------------------------
 # Aturan build
 # ------------------------------
-all: $(LIB_NAME) $(LOADER_NAME) $(SECURITY_NAME)
+all: $(LIB_NAME) $(LOADER_NAME) $(SECURITY_NAME) \
+     $(MI_CHARGER_MONITOR) $(MI_CHARGER)
 
 $(LIB_NAME): libmrtreborn.cpp
 	$(CXX) $(CXX_FLAGS) -shared $< -o $@ $(LDFLAGS)
@@ -68,21 +74,36 @@ $(SECURITY_NAME): mrt_security.c sha256.c $(LOADER_NAME)
 	echo "Hash: $$HASH"; \
 	$(CC) $(C_FLAGS) -DEXPECTED_HASH=\"$$HASH\" mrt_security.c sha256.c -o $@ $(LDFLAGS)
 
+# ============================================================
+# MI Charger: monitor USB plug/unplug + service fast-charge
+# ============================================================
+$(MI_CHARGER_MONITOR): micharge_monitor.c
+	$(CC) $(C_FLAGS) $< -o $@ $(LDFLAGS)
+
+$(MI_CHARGER): mrt_micharge.c
+	$(CC) $(C_FLAGS) $< -o $@ $(LDFLAGS)
+
 # ------------------------------
 # Pembersihan
 # ------------------------------
 clean:
-	rm -f $(LIB_NAME) $(LOADER_NAME) $(SECURITY_NAME)
+	rm -f $(LIB_NAME) $(LOADER_NAME) $(SECURITY_NAME) \
+	      $(MI_CHARGER_MONITOR) $(MI_CHARGER)
 
 # ------------------------------
 # Instalasi ke perangkat (memerlukan adb)
 # ------------------------------
-push: $(LIB_NAME) $(LOADER_NAME) $(SECURITY_NAME)
-	adb push $(LIB_NAME) $(LIB_INSTALL_PATH)
-	adb push $(LOADER_NAME) /data/local/tmp/
-	adb push $(SECURITY_NAME) /data/local/tmp/
+push: $(LIB_NAME) $(LOADER_NAME) $(SECURITY_NAME) \
+      $(MI_CHARGER_MONITOR) $(MI_CHARGER)
+	adb push $(LIB_NAME)           $(LIB_INSTALL_PATH)
+	adb push $(LOADER_NAME)        /data/local/tmp/
+	adb push $(SECURITY_NAME)      /data/local/tmp/
+	adb push $(MI_CHARGER_MONITOR) /data/local/tmp/
+	adb push $(MI_CHARGER)         /data/local/tmp/
 	adb shell chmod 755 /data/local/tmp/$(LOADER_NAME)
 	adb shell chmod 755 /data/local/tmp/$(SECURITY_NAME)
+	adb shell chmod 755 /data/local/tmp/$(MI_CHARGER_MONITOR)
+	adb shell chmod 755 /data/local/tmp/$(MI_CHARGER)
 
 # ------------------------------
 # Menjalankan loader
@@ -97,9 +118,22 @@ run-security: push
 	adb shell /data/local/tmp/$(SECURITY_NAME)
 
 # ------------------------------
-# Menampilkan logcat
+# Menjalankan monitor charger (manual, foreground)
+# ------------------------------
+run-micharge-monitor: push
+	adb shell /data/local/tmp/$(MI_CHARGER_MONITOR)
+
+# ------------------------------
+# Menjalankan service fast-charge (manual, sekali jalan)
+# ------------------------------
+run-micharge: push
+	adb shell /data/local/tmp/$(MI_CHARGER)
+
+# ------------------------------
+# Menampilkan logcat (semua tag MRT)
 # ------------------------------
 logcat:
-	adb logcat -s MRTReborn MRTLoader MRT_Security
+	adb logcat -s MRTReborn MRTLoader MRT_Security MrtMiChargeMon MrtMiCharge
 
-.PHONY: all clean push run run-security logcat
+.PHONY: all clean push run run-security \
+        run-micharge-monitor run-micharge logcat

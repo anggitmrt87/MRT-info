@@ -22,7 +22,7 @@ jobs:
 
     steps:
       - name: Checkout source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -38,13 +38,24 @@ jobs:
 
       - name: Build all components
         run: |
-          make TARGET_ARCH=${{ matrix.arch }} API_LEVEL=${{ env.API_LEVEL }} NDK_PATH=$ANDROID_NDK_HOME
+          make TARGET_ARCH=${{ matrix.arch }} \
+               API_LEVEL=${{ env.API_LEVEL }} \
+               NDK_PATH=$ANDROID_NDK_HOME
+
+      - name: Verify artifacts
+        run: |
+          ls -la libmrtreborn.so mrt_loader mrt_security \
+                 micharge_monitor mrt_micharge
+          file libmrtreborn.so mrt_loader mrt_security \
+               micharge_monitor mrt_micharge
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: mrt-reborn-${{ matrix.arch }}
           path: |
             libmrtreborn.so
             mrt_loader
             mrt_security
+            micharge_monitor
+            mrt_micharge
