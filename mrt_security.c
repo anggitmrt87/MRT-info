@@ -19,7 +19,7 @@
 
 #define LOG_TAG "MRT_Security"
 #define CONFIG_FILE "/system/bin/mrt_loader"
-#define SECURITY_PKG "com.chime.updatechecker"
+#define SECURITY_PKG "com.oemports10t.pif"
 #define SECURITY_ACTIVITY ".SecActivity"
 
 #ifndef EXPECTED_HASH
