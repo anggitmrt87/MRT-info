@@ -332,7 +332,7 @@ jobs:
           esac
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           log-accepted-android-sdk-licenses: false
           cmdline-tools-version: ${{ env.CMDLINE_TOOLS_VERSION }}
