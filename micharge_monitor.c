@@ -19,6 +19,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <signal.h>
+#include <time.h>
 #include <syslog.h>
 #include <cutils/properties.h>
 
@@ -31,6 +32,16 @@ static volatile int g_running = 1;
 static void signal_handler(int sig) {
     (void)sig;
     g_running = 0;
+}
+
+/* Sleep function that can be interrupted by a signal */
+static void interruptible_sleep(int seconds) {
+    struct timespec ts;
+    ts.tv_sec = seconds;
+    ts.tv_nsec = 0;
+    while (nanosleep(&ts, &ts) == -1 && errno == EINTR) {
+        if (!g_running) break;
+    }
 }
 
 static int read_present(void) {
@@ -75,9 +86,8 @@ int main(void) {
     while (g_running) {
         update_property();
 
-        /* sleep(POLL_SEC) but wake early on signal */
-        if (sleep(POLL_SEC) > 0 && !g_running)
-            break;
+        if (!g_running) break;
+        interruptible_sleep(POLL_SEC);
     }
 
     syslog(LOG_INFO, "monitor stopped");

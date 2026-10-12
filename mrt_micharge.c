@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <signal.h>
+#include <time.h>
 #include <syslog.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -35,6 +36,16 @@ static volatile int g_running = 1;
 static void signal_handler(int sig) {
     (void)sig;
     g_running = 0;
+}
+
+/* Sleep function that can be interrupted by a signal */
+static void interruptible_sleep(int seconds) {
+    struct timespec ts;
+    ts.tv_sec = seconds;
+    ts.tv_nsec = 0;
+    while (nanosleep(&ts, &ts) == -1 && errno == EINTR) {
+        if (!g_running) break;
+    }
 }
 
 static int read_sysfs(const char *path, char *buf, size_t size) {
@@ -119,7 +130,6 @@ static void send_broadcast(int qct, const char *real_type,
                            const char *batt_type, int volt_max)
 {
     pid_t pid;
-    int status = 0;
     char qct_str[12];
     char power_str[12];
     int power = power_from_qct(qct);
@@ -155,14 +165,22 @@ static void send_broadcast(int qct, const char *real_type,
         _exit(127);
     }
 
+    /* 
+     * NOTE: waitpid() is removed because SIGCHLD is already SIG_IGNed.
+     * The kernel will automatically clean up child processes.
+     * If you want to monitor the status, remove signal(SIGCHLD, SIG_IGN) in main()
+     * and leave waitpid() below.
+     */
+    /*
+    int status = 0;
     if (waitpid(pid, &status, 0) < 0) {
         syslog(LOG_WARNING, "waitpid failed: %s", strerror(errno));
         return;
     }
-
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         syslog(LOG_WARNING, "am broadcast failed (status=0x%x)", status);
     }
+    */
 }
 
 int main(int argc, char **argv) {
@@ -190,7 +208,13 @@ int main(int argc, char **argv) {
         char batt_type[32] = {0};
         int present, volt_max, qct;
 
-        read_sysfs(PATH_REAL_TYPE,   real_type, sizeof(real_type));
+        /* Check if the sysfs file is available */
+        if (read_sysfs(PATH_REAL_TYPE, real_type, sizeof(real_type)) != 0) {
+            syslog(LOG_INFO, "waiting for sysfs real_type...");
+            interruptible_sleep(POLL_INTERVAL_SEC);
+            continue;
+        }
+
         read_sysfs(PATH_CHARGE_TYPE, batt_type, sizeof(batt_type));
         present  = read_int(PATH_PRESENT,  0);
         volt_max = read_int(PATH_VOLT_MAX, 0);
@@ -207,16 +231,16 @@ int main(int argc, char **argv) {
                 send_broadcast(qct, real_type, batt_type, volt_max);
                 last_qct = qct;
             } else {
-                /* hold: don't update last_qct, retry next poll */
+                /* hold: do not update last_qct, try again next poll */
                 syslog(LOG_INFO, "waiting for boot_completed...");
             }
         }
 
-        if (sleep(POLL_INTERVAL_SEC) > 0 && !g_running)
-            break;
+        if (!g_running) break;
+        interruptible_sleep(POLL_INTERVAL_SEC);
     }
 
-    /* On shutdown (unplugged / stop), broadcast qct=0 if we were charging */
+    /* During shutdown (charger removed / service stopped), broadcast qct=0 */
     if (last_qct > 0) {
         syslog(LOG_INFO, "shutting down: broadcasting qct=0");
         send_broadcast(0, "", "", 0);
