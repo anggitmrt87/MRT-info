@@ -1,0 +1,42 @@
+# ---------------------------------------------------------------------------
+#  M•R•T Project™
+#  Author : @AnGgIt86
+#  Contact: jarbull86@gmail.com
+# ---------------------------------------------------------------------------
+#
+# Charger monitor — always running, tiny
+#
+# Watches charger present + force_fast_charge toggle and maintains:
+#   vendor.micharge.present   (0/1)
+#   vendor.micharge.enabled   (0/1)
+#   vendor.micharge.active    (0/1) = present && enabled
+# ---------------------------------------------------------------------------
+service micharge_monitor /system/vendor/bin/micharge_monitor
+    class late_start
+    user root
+    group root system
+    seclabel u:r:micharge_monitor:s0
+
+on property:sys.boot_completed=1
+    start micharge_monitor
+
+# In charger-only boot mode, sys.boot_completed never fires
+on charger
+    start micharge_monitor
+
+# ---------------------------------------------------------------------------
+# Heavy broadcast service — only runs while charger is plugged
+# AND force_fast_charge is enabled
+# ---------------------------------------------------------------------------
+service mrt_micharge /system/vendor/bin/mrt_micharge
+    class late_start
+    user root
+    group root system shell
+    seclabel u:r:mrt_micharge:s0
+    disabled
+
+on property:vendor.micharge.active=1
+    start mrt_micharge
+
+on property:vendor.micharge.active=0
+    stop mrt_micharge

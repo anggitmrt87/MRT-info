@@ -1,13 +1,28 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * micharge_monitor - Watch USB charger plug/unplug events
+ *                    and force_fast_charge toggle
  *
- * Polls /sys/class/power_supply/usb/present and updates the
- * vendor.micharge.present property. init reacts to that property
- * to start/stop the heavy mrt_micharge service.
+ * Polls:
+ *   /sys/class/power_supply/usb/present
+ *   /sys/kernel/fast_charge/force_fast_charge
  *
- * Runs always. Extremely light: one read + one property compare
+ * Updates:
+ *   vendor.micharge.present  -> charger physically plugged (0/1)
+ *   vendor.micharge.enabled  -> force_fast_charge enabled (0/1)
+ *   vendor.micharge.active   -> present && enabled (0/1)
+ *
+ * init reacts to vendor.micharge.active to start/stop
+ * the heavy mrt_micharge service.
+ *
+ * Runs always. Extremely light: two reads + three property compares
  * every 2 seconds.
+ *
+ * ---------------------------------------------------------------------------
+ *  M•R•T Project™
+ *  Author : @AnGgIt86
+ *  Contact: jarbull86@gmail.com
+ * ---------------------------------------------------------------------------
  */
 
 #define LOG_TAG "MrtMiChargeMon"
@@ -24,7 +39,12 @@
 #include <cutils/properties.h>
 
 #define PATH_PRESENT  "/sys/class/power_supply/usb/present"
+#define PATH_FFC      "/sys/kernel/fast_charge/force_fast_charge"
+
 #define PROP_PRESENT  "vendor.micharge.present"
+#define PROP_ENABLED  "vendor.micharge.enabled"
+#define PROP_ACTIVE   "vendor.micharge.active"
+
 #define POLL_SEC      2
 
 static volatile int g_running = 1;
@@ -44,12 +64,21 @@ static void interruptible_sleep(int seconds) {
     }
 }
 
-static int read_present(void) {
+/*
+ * Generic "read an int from sysfs, normalize to 0/1".
+ * Returns:
+ *   0  -> value is 0 (or equivalent)
+ *   1  -> value is non-zero
+ *  -1  -> file missing or unreadable
+ */
+static int read_sysfs_flag(const char *path) {
     int fd;
     char buf[16];
     ssize_t n;
+    char *end;
+    long v;
 
-    fd = open(PATH_PRESENT, O_RDONLY);
+    fd = open(path, O_RDONLY);
     if (fd < 0) return -1;
 
     n = read(fd, buf, sizeof(buf) - 1);
@@ -57,22 +86,48 @@ static int read_present(void) {
 
     if (n <= 0) return -1;
     buf[n] = '\0';
-    return atoi(buf);
+
+    v = strtol(buf, &end, 10);
+    if (end == buf) return -1;
+    return v ? 1 : 0;
 }
 
-static void update_property(void) {
-    int present = read_present();
+/* Set property only if it changed. Returns 1 if changed. */
+static int set_prop_if_changed(const char *key, int value) {
     char cur[PROP_VALUE_MAX];
+    int cur_val;
 
-    if (present < 0) return;    /* file not there yet */
+    property_get(key, cur, "0");
+    cur_val = atoi(cur) ? 1 : 0;
 
-    property_get(PROP_PRESENT, cur, "0");
-    int cur_val = atoi(cur);
-
-    if (cur_val != present) {
-        property_set(PROP_PRESENT, present ? "1" : "0");
-        syslog(LOG_INFO, "charger present=%d", present);
+    if (cur_val != value) {
+        property_set(key, value ? "1" : "0");
+        return 1;
     }
+    return 0;
+}
+
+static void update_properties(void) {
+    int present = read_sysfs_flag(PATH_PRESENT);
+    int enabled = read_sysfs_flag(PATH_FFC);
+    int active;
+
+    /*
+     * If sysfs is missing, treat as "not present" / "not enabled"
+     * so properties do not get stuck at 1.
+     */
+    if (present < 0) present = 0;
+    if (enabled < 0) enabled = 0;
+
+    active = (present && enabled) ? 1 : 0;
+
+    if (set_prop_if_changed(PROP_PRESENT, present))
+        syslog(LOG_INFO, "charger present=%d", present);
+    if (set_prop_if_changed(PROP_ENABLED, enabled))
+        syslog(LOG_INFO, "force_fast_charge enabled=%d", enabled);
+    if (set_prop_if_changed(PROP_ACTIVE, active))
+        syslog(LOG_INFO, "active=%d (present=%d enabled=%d)",
+               active, present, enabled);
 }
 
 int main(void) {
@@ -81,10 +136,10 @@ int main(void) {
     signal(SIGHUP,  signal_handler);
 
     openlog(LOG_TAG, LOG_PID | LOG_CONS, LOG_DAEMON);
-    syslog(LOG_INFO, "monitor started");
+    syslog(LOG_INFO, "monitor started (M•R•T Project™ @AnGgIt86)");
 
     while (g_running) {
-        update_property();
+        update_properties();
 
         if (!g_running) break;
         interruptible_sleep(POLL_SEC);

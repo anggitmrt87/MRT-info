@@ -2,9 +2,17 @@
 /*
  * mrt_micharge - MIUI fast charge detection bypass
  *
- * Started by init when charger is plugged, stopped when unplugged.
+ * Started by init when charger is plugged AND force_fast_charge is enabled
+ * (vendor.micharge.active=1), stopped otherwise.
+ *
  * Reads charger state from Qualcomm sysfs and broadcasts
  * miui.intent.action.ACTION_QUICK_CHARGE_TYPE via /system/bin/am.
+ *
+ * ---------------------------------------------------------------------------
+ *  M•R•T Project™
+ *  Author : @AnGgIt86
+ *  Contact: jarbull86@gmail.com
+ * ---------------------------------------------------------------------------
  */
 
 #define LOG_TAG "MrtMiCharge"
@@ -12,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -28,6 +37,7 @@
 #define PATH_VOLT_MAX    "/sys/class/power_supply/usb/voltage_max"
 #define PATH_PRESENT     "/sys/class/power_supply/usb/present"
 #define PATH_CHARGE_TYPE "/sys/class/power_supply/battery/charge_type"
+#define PATH_FFC         "/sys/kernel/fast_charge/force_fast_charge"
 
 #define POLL_INTERVAL_SEC 2
 
@@ -81,6 +91,31 @@ static int read_int(const char *path, int default_value) {
     return atoi(buf);
 }
 
+/* Case-insensitive substring search (portable, no _GNU_SOURCE needed) */
+static int str_contains_ci(const char *haystack, const char *needle) {
+    size_t nlen;
+
+    if (!haystack || !needle) return 0;
+    nlen = strlen(needle);
+    if (nlen == 0) return 1;
+
+    for (; *haystack; haystack++) {
+        if (strncasecmp(haystack, needle, nlen) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+/*
+ * Some devices report voltage_max in millivolts, others in microvolts.
+ * Normalize to microvolts.
+ */
+static int normalize_voltage_uv(int v) {
+    if (v <= 0) return 0;
+    if (v < 100000) return v * 1000;  /* heuristic: mV -> uV */
+    return v;                         /* already uV */
+}
+
 static int map_to_quick_charge_type(const char *real_type,
                                     const char *batt_type,
                                     int present,
@@ -88,25 +123,33 @@ static int map_to_quick_charge_type(const char *real_type,
 {
     if (!present) return 0;
 
-    if (strstr(real_type, "HVDCP_3P5"))                              return 3;
-    if (strstr(real_type, "HVDCP_3"))                                return 3;
-    if (strstr(real_type, "HVDCP"))                                  return 2;
-    if (strstr(real_type, "PD_PPS") || strstr(real_type, "PPS"))     return 3;
-    if (strstr(real_type, "PD"))                                     return 2;
-    if (strstr(real_type, "VOOC") || strstr(real_type, "WARP") ||
-        strstr(real_type, "SUPERVOOC"))                              return 3;
-    if (strstr(real_type, "DCP"))                                    return 1;
-    if (strstr(real_type, "CDP"))                                    return 1;
-    if (strstr(real_type, "SDP"))                                    return 1;
-    if (strstr(real_type, "FLOAT"))                                  return 0;
+    /* --- real_type / type based detection (case-insensitive) --- */
+    if (str_contains_ci(real_type, "HVDCP_3P5"))                            return 3;
+    if (str_contains_ci(real_type, "HVDCP_3"))                              return 3;
+    if (str_contains_ci(real_type, "HVDCP"))                                return 2;
+    if (str_contains_ci(real_type, "PD_PPS") ||
+        str_contains_ci(real_type, "PPS"))                                  return 3;
+    if (str_contains_ci(real_type, "PD"))                                   return 2;
+    if (str_contains_ci(real_type, "VOOC") ||
+        str_contains_ci(real_type, "WARP") ||
+        str_contains_ci(real_type, "SUPERVOOC"))                            return 3;
+    if (str_contains_ci(real_type, "DCP"))                                  return 1;
+    if (str_contains_ci(real_type, "CDP"))                                  return 1;
+    if (str_contains_ci(real_type, "SDP"))                                  return 1;
+    if (str_contains_ci(real_type, "FLOAT"))                                return 0;
 
-    if (strcmp(batt_type, "Fast")  == 0 ||
-        strcmp(batt_type, "TURBO") == 0 ||
-        strcmp(batt_type, "Turbo") == 0)                             return 3;
-    if (strcmp(batt_type, "Normal") == 0)                            return 1;
+    /* --- battery charge_type based detection --- */
+    if (str_contains_ci(batt_type, "fast") ||
+        str_contains_ci(batt_type, "turbo") ||
+        str_contains_ci(batt_type, "flash") ||
+        str_contains_ci(batt_type, "quick"))                                return 3;
+    if (str_contains_ci(batt_type, "normal") ||
+        str_contains_ci(batt_type, "ac") ||
+        str_contains_ci(batt_type, "usb"))                                  return 1;
 
-    if (volt_max >= 9000000)                                         return 3;
-    if (volt_max >= 6000000)                                         return 2;
+    /* --- voltage_max fallback --- */
+    if (volt_max >= 9000000)                                                return 3;
+    if (volt_max >= 6000000)                                                return 2;
 
     return 0;
 }
@@ -157,6 +200,7 @@ static void send_broadcast(int qct, const char *real_type,
         }
 
         execl("/system/bin/am", "am", "broadcast",
+              "--user", "0",
               "-a", "miui.intent.action.ACTION_QUICK_CHARGE_TYPE",
               "--ei", "miui.intent.extra.quick_charge_type", qct_str,
               "--ei", "miui.intent.extra.POWER_MAX", power_str,
@@ -165,32 +209,33 @@ static void send_broadcast(int qct, const char *real_type,
         _exit(127);
     }
 
-    /* 
-     * NOTE: waitpid() is removed because SIGCHLD is already SIG_IGNed.
-     * The kernel will automatically clean up child processes.
-     * If you want to monitor the status, remove signal(SIGCHLD, SIG_IGN) in main()
-     * and leave waitpid() below.
-     */
     /*
-    int status = 0;
-    if (waitpid(pid, &status, 0) < 0) {
-        syslog(LOG_WARNING, "waitpid failed: %s", strerror(errno));
-        return;
-    }
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        syslog(LOG_WARNING, "am broadcast failed (status=0x%x)", status);
-    }
-    */
+     * SIGCHLD is SIG_IGN, so the kernel reaps the child automatically.
+     * If you want to check the am exit status, remove
+     * signal(SIGCHLD, SIG_IGN) in main() and re-enable the waitpid block.
+     */
+}
+
+static void print_banner(void) {
+    printf("mrt_micharge - MIUI fast charge detection bypass\n");
+    printf("M•R•T Project™  |  @AnGgIt86  |  jarbull86@gmail.com\n");
 }
 
 int main(int argc, char **argv) {
     int last_qct = -2;
+    int boot_wait_logged = 0;
     int i;
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 ||
             strcmp(argv[i], "--help") == 0) {
+            print_banner();
             printf("Usage: %s [-h|--help]\n", argv[0]);
+            return 0;
+        }
+        if (strcmp(argv[i], "-v") == 0 ||
+            strcmp(argv[i], "--version") == 0) {
+            print_banner();
             return 0;
         }
     }
@@ -201,23 +246,45 @@ int main(int argc, char **argv) {
     signal(SIGCHLD, SIG_IGN);
 
     openlog(LOG_TAG, LOG_PID | LOG_CONS, LOG_DAEMON);
-    syslog(LOG_INFO, "service started");
+    syslog(LOG_INFO, "service started (M•R•T Project™ @AnGgIt86)");
 
     while (g_running) {
         char real_type[32] = {0};
         char batt_type[32] = {0};
-        int present, volt_max, qct;
+        int present, volt_max, qct, ffc;
 
-        /* Check if the sysfs file is available */
-        if (read_sysfs(PATH_REAL_TYPE, real_type, sizeof(real_type)) != 0) {
-            syslog(LOG_INFO, "waiting for sysfs real_type...");
+        /*
+         * Safety net: if force_fast_charge is disabled at runtime,
+         * force qct=0. init will stop this service soon anyway
+         * via vendor.micharge.active, but this avoids a stale
+         * "fast charging" state in the meantime.
+         */
+        ffc = read_int(PATH_FFC, 0);
+        if (!ffc) {
+            if (last_qct != 0) {
+                syslog(LOG_INFO, "force_fast_charge disabled -> qct=0");
+                send_broadcast(0, "", "", 0);
+                last_qct = 0;
+            }
             interruptible_sleep(POLL_INTERVAL_SEC);
             continue;
         }
 
+        /*
+         * Prefer real_type; fall back to type.
+         * If neither is available, wait until one shows up.
+         */
+        if (read_sysfs(PATH_REAL_TYPE, real_type, sizeof(real_type)) != 0) {
+            if (read_sysfs(PATH_TYPE, real_type, sizeof(real_type)) != 0) {
+                syslog(LOG_INFO, "waiting for sysfs real_type/type...");
+                interruptible_sleep(POLL_INTERVAL_SEC);
+                continue;
+            }
+        }
+
         read_sysfs(PATH_CHARGE_TYPE, batt_type, sizeof(batt_type));
         present  = read_int(PATH_PRESENT,  0);
-        volt_max = read_int(PATH_VOLT_MAX, 0);
+        volt_max = normalize_voltage_uv(read_int(PATH_VOLT_MAX, 0));
 
         qct = map_to_quick_charge_type(real_type, batt_type,
                                        present, volt_max);
@@ -230,9 +297,12 @@ int main(int argc, char **argv) {
                     present, real_type, batt_type, volt_max, qct);
                 send_broadcast(qct, real_type, batt_type, volt_max);
                 last_qct = qct;
+                boot_wait_logged = 0;
             } else {
-                /* hold: do not update last_qct, try again next poll */
-                syslog(LOG_INFO, "waiting for boot_completed...");
+                if (!boot_wait_logged) {
+                    syslog(LOG_INFO, "waiting for boot_completed...");
+                    boot_wait_logged = 1;
+                }
             }
         }
 
